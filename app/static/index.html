@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Maps Scraper - Premium Lead Generation</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Space+Grotesk:wght@400;500;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="https://js.stripe.com/v3/"></script>
+</head>
+<body>
+  <header class="header">
+    <div class="header-content">
+      <div class="logo">
+        <span class="logo-icon">🗺️</span>
+        <span class="logo-text">MapsScraper Pro</span>
+      </div>
+      <nav class="nav">
+        <a href="#dashboard" class="nav-link">Dashboard</a>
+        <a href="#profile" class="nav-link">Profile</a>
+        <a href="#scraper" class="nav-link">Scraper</a>
+        <a href="#pricing" class="nav-link">Pricing</a>
+        <a href="/admin/login" class="nav-link admin-link">Admin Login</a>
+        <div class="credit-display" id="creditDisplay">
+          <span class="credit-icon">⏳</span>
+          <span id="userCredits">0</span> trial days left
+        </div>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Lead Intelligence Platform</p>
+        <h1>Scrape Google Maps and spot the best leads before anyone else.</h1>
+        <p class="intro">
+          Run focused map searches, monitor your lead quality in one place, and see which categories and cities are worth your next campaign.
+        </p>
+        <div class="hero-badges">
+          <span class="badge">15-day free trial</span>
+          <span class="badge">Submit company details once</span>
+          <span class="badge">Upgrade with card or PayPal</span>
+        </div>
+        <div class="hero-actions">
+          <a href="#scraper" class="hero-link primary-link">Launch a scrape</a>
+          <a href="#insights" class="hero-link secondary-link">View radar</a>
+        </div>
+        <p class="admin-access-note">Need to manage users, trials, and subscriptions? <a href="/admin/login">Open the admin login</a>.</p>
+      </div>
+      <aside class="hero-radar" id="heroRadar">
+        <p class="radar-label">Opportunity Radar</p>
+        <div class="radar-big-number" id="heroTotalBusinesses">0</div>
+        <p class="radar-caption">saved businesses indexed</p>
+        <div class="radar-metrics">
+          <div>
+            <span>Success rate</span>
+            <strong id="heroSuccessRate">0%</strong>
+          </div>
+          <div>
+            <span>Contactable leads</span>
+            <strong id="heroContactable">0</strong>
+          </div>
+        </div>
+        <p class="radar-hint" id="heroTopSignal">Load data to reveal your hottest market.</p>
+      </aside>
+    </section>
+
+    <section id="profile" class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Company Profile</h2>
+          <p class="section-subtitle">Users must submit their business details before scraping starts.</p>
+        </div>
+      </div>
+      <form id="profile-form" class="form-grid">
+        <label>
+          Full Name *
+          <input name="full_name" placeholder="Jane Doe" required>
+        </label>
+        <label>
+          Company Name *
+          <input name="company_name" placeholder="Northwind Growth" required>
+        </label>
+        <label>
+          Email *
+          <input name="email" type="email" placeholder="jane@company.com" required>
+        </label>
+        <label>
+          Phone *
+          <input name="phone" placeholder="+1 555 123 4567" required>
+        </label>
+        <label>
+          Country
+          <input name="country" placeholder="France">
+        </label>
+        <label>
+          Preferred Payment Method
+          <select name="preferred_payment_provider">
+            <option value="card">Credit Card</option>
+            <option value="paypal">PayPal</option>
+          </select>
+        </label>
+        <button type="submit" id="saveProfileBtn">Save Profile & Start Trial</button>
+      </form>
+      <p id="profileStatus" class="status">Complete the profile once to unlock your 15-day free trial.</p>
+    </section>
+
+    <section id="dashboard" class="panel dashboard-panel">
+      <div class="panel-header">
+        <div>
+          <h2>User Dashboard</h2>
+          <p class="section-subtitle">Manage your activity, subscription, and account details from one place.</p>
+        </div>
+        <button id="refresh-dashboard" type="button" class="secondary">Refresh dashboard</button>
+      </div>
+      <div id="dashboardEmpty" class="dashboard-empty">
+        Save your company profile to unlock the personal dashboard and self-service subscription controls.
+      </div>
+      <div id="dashboardContent" class="dashboard-content" hidden>
+        <div id="dashboardSummary" class="dashboard-summary-grid"></div>
+        <div class="dashboard-columns">
+          <article class="dashboard-card">
+            <h3>Subscription Controls</h3>
+            <p id="dashboardSubscriptionStatus" class="section-subtitle"></p>
+            <div class="pricing-actions-row dashboard-actions">
+              <button id="dashboardUpgradePro" type="button">Upgrade to Professional</button>
+              <button id="dashboardUpgradeEnterprise" type="button" class="secondary">Upgrade to Enterprise</button>
+              <button id="dashboardCancelSubscription" type="button" class="secondary danger-button">Cancel Subscription</button>
+              <button id="dashboardEditProfile" type="button" class="secondary">Modify My Info</button>
+            </div>
+          </article>
+          <article class="dashboard-card">
+            <h3>Recent Payments</h3>
+            <div id="dashboardPayments" class="signal-list"></div>
+          </article>
+          <article class="dashboard-card">
+            <h3>Subscription History</h3>
+            <div id="dashboardSubscriptions" class="signal-list"></div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section id="insights" class="panel insights-panel">
+      <div class="panel-header">
+        <div>
+          <h2>Signal Board</h2>
+          <p class="section-subtitle">A live snapshot of platform traction and lead quality</p>
+        </div>
+        <button id="refresh-insights" type="button" class="secondary">Refresh radar</button>
+      </div>
+      <div id="insightCards" class="insight-grid"></div>
+      <div class="insight-columns">
+        <div class="insight-column">
+          <h3>Top Categories</h3>
+          <div id="topCategories" class="signal-list"></div>
+        </div>
+        <div class="insight-column">
+          <h3>Top Cities</h3>
+          <div id="topCities" class="signal-list"></div>
+        </div>
+        <div class="insight-column">
+          <h3>Recent Runs</h3>
+          <div id="recentRuns" class="signal-list"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="scraper" class="panel">
+      <h2>Start a Scrape</h2>
+      <div class="credit-warning" id="creditWarning" style="display: none;">
+        ⚠️ Your trial is over. Subscribe to Professional or Enterprise to keep scraping.
+      </div>
+      <div class="payment-banner" id="paymentBanner" style="display: none;"></div>
+      <form id="scrape-form" class="form-grid">
+        <label>
+          Keyword *
+          <input name="keyword" placeholder="restaurants, hotels, dentists..." required>
+        </label>
+        <label>
+          Location
+          <input name="location" placeholder="Paris, France">
+        </label>
+        <label>
+          Radius (meters)
+          <input name="radius" value="10000">
+        </label>
+        <label>
+          Max Results
+          <input name="max_results" type="number" value="25" min="1" max="500">
+        </label>
+        <label class="checkbox">
+          <input name="headless" type="checkbox">
+          Headless mode for web scraping
+        </label>
+        <label class="checkbox">
+          <input name="save_files" type="checkbox" checked>
+          Export CSV/XLSX files
+        </label>
+        <label class="email-field">
+          Your Email *
+          <input name="email" type="email" placeholder="your@email.com" required>
+        </label>
+        <button type="submit" id="scrapeBtn">
+          <span class="btn-icon">⌕</span>
+          Run Scrape
+        </button>
+      </form>
+      <p id="status" class="status">Ready. Your current trial window shows <span id="statusCredits">0</span> days left.</p>
+      <p class="status helper-status">Enable headless mode to keep the browser hidden while Selenium scrapes Google Maps.</p>
+    </section>
+
+    <section id="pricing" class="panel">
+      <h2>Choose Your Subscription</h2>
+      <p class="section-subtitle">After the 15-day trial, scraping stays open only on Professional or Enterprise.</p>
+      <div id="pricingCards" class="pricing-grid"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <h2>Saved Runs</h2>
+        <button id="refresh-runs" type="button" class="secondary">Refresh</button>
+      </div>
+      <div id="runs" class="cards"></div>
+      <div class="pagination-bar" id="runsPagination"></div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Saved Businesses</h2>
+          <p class="section-subtitle">Download the latest run in Excel, CSV, or PDF with one click.</p>
+        </div>
+        <div class="panel-actions">
+          <div class="download-toolbar" id="businessExports"></div>
+          <button id="refresh-businesses" type="button" class="secondary">Refresh</button>
+        </div>
+      </div>
+      <div id="businesses" class="table-wrap"></div>
+      <div class="pagination-bar" id="businessesPagination"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <p>&copy; 2026 MapsScraper Pro. All rights reserved.</p>
+    <p class="footer-note">FastAPI, PostgreSQL, Selenium, and Stripe wired into one lead operations surface.</p>
+    <p class="footer-note"><a href="/admin/login">Admin login</a></p>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
