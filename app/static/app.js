@@ -89,6 +89,10 @@ const businessListState = {
 let latestRunId = null;
 let dashboardState = null;
 let savedSearchesState = [];
+let scrapeMonitorTimer = null;
+let hasInitializedRunStatuses = false;
+const runStatusMap = new Map();
+let runClockTimer = null;
 
 const LEAD_STATUS_OPTIONS = ["new", "contacted", "qualified", "proposal", "won", "lost"];
 
@@ -105,6 +109,206 @@ function setProfileStatus(message, isError = false) {
 function setAuthStateMessage(message, isError = false) {
   authStateMessageEl.textContent = message;
   authStateMessageEl.style.color = isError ? "#a02b2b" : "";
+}
+
+async function ensureNotificationPermission() {
+  if (!("Notification" in window)) {
+    return "unsupported";
+  }
+
+  if (Notification.permission === "granted" || Notification.permission === "denied") {
+    return Notification.permission;
+  }
+
+  try {
+    return await Notification.requestPermission();
+  } catch {
+    return "default";
+  }
+}
+
+function showBrowserNotification(title, body) {
+  if (!("Notification" in window) || Notification.permission !== "granted") {
+    return;
+  }
+
+  try {
+    new Notification(title, { body, tag: "scrape-run-status" });
+  } catch {
+    // Ignore notification errors and keep the in-app status message as fallback.
+  }
+}
+
+function startScrapeMonitor() {
+  if (scrapeMonitorTimer) {
+    return;
+  }
+
+  scrapeMonitorTimer = window.setInterval(async () => {
+    try {
+      await loadRuns();
+    } catch {
+      // Ignore polling errors to avoid spamming the status area.
+    }
+  }, 10000);
+}
+
+function stopScrapeMonitor() {
+  if (!scrapeMonitorTimer) {
+    return;
+  }
+
+  window.clearInterval(scrapeMonitorTimer);
+  scrapeMonitorTimer = null;
+}
+
+function startRunClock() {
+  if (runClockTimer) {
+    return;
+  }
+
+  runClockTimer = window.setInterval(() => {
+    refreshRunTimers();
+  }, 1000);
+}
+
+function stopRunClock() {
+  if (!runClockTimer) {
+    return;
+  }
+
+  window.clearInterval(runClockTimer);
+  runClockTimer = null;
+}
+
+function formatDuration(totalSeconds) {
+  const safeSeconds = Math.max(0, Math.floor(totalSeconds));
+  const minutes = Math.floor(safeSeconds / 60);
+  const seconds = safeSeconds % 60;
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+function estimateRunDurationSeconds(run) {
+  const requestedResults = Number(run.max_results || 0);
+  const baseSeconds = 35;
+  const perResultSeconds = 2.4;
+  return Math.max(60, Math.min(1800, Math.round(baseSeconds + requestedResults * perResultSeconds)));
+}
+
+function getRunTiming(run) {
+  const createdAtMs = new Date(run.created_at).getTime();
+  const elapsedSeconds = Number.isFinite(createdAtMs)
+    ? Math.max(0, Math.floor((Date.now() - createdAtMs) / 1000))
+    : 0;
+  const estimatedTotalSeconds = estimateRunDurationSeconds(run);
+  const remainingSeconds = Math.max(0, estimatedTotalSeconds - elapsedSeconds);
+
+  return {
+    elapsedSeconds,
+    estimatedTotalSeconds,
+    remainingSeconds,
+  };
+}
+
+function getRunProgressMeta(run) {
+  const status = String(run.status || "queued").toLowerCase();
+  if (status !== "queued" && status !== "running") {
+    return null;
+  }
+
+  const timing = getRunTiming(run);
+  const statusLabel = status === "running" ? "Running" : "Queued";
+  return {
+    statusLabel,
+    targetLabel: `Target: up to ${formatNumber(run.max_results)} businesses`,
+    timerLabel: `Elapsed: ${formatDuration(timing.elapsedSeconds)}`,
+    etaLabel: `Estimated time left: ${formatDuration(timing.remainingSeconds)}`,
+  };
+}
+
+function refreshRunTimers() {
+  const timedCards = runsEl.querySelectorAll(".run-card[data-run-status]");
+  let hasActiveTimedRun = false;
+
+  timedCards.forEach((card) => {
+    const status = (card.dataset.runStatus || "").toLowerCase();
+    if (status !== "queued" && status !== "running") {
+      return;
+    }
+
+    hasActiveTimedRun = true;
+    const run = {
+      status,
+      created_at: card.dataset.createdAt,
+      max_results: Number(card.dataset.maxResults || 0),
+    };
+    const meta = getRunProgressMeta(run);
+    if (!meta) {
+      return;
+    }
+
+    const timerEl = card.querySelector("[data-role='run-timer']");
+    const etaEl = card.querySelector("[data-role='run-eta']");
+    if (timerEl) {
+      timerEl.textContent = meta.timerLabel;
+    }
+    if (etaEl) {
+      etaEl.textContent = meta.etaLabel;
+    }
+  });
+
+  if (!hasActiveTimedRun) {
+    stopRunClock();
+  }
+}
+
+function updateRunNotifications(runs) {
+  const hasActiveRuns = runs.some((run) => ["queued", "running"].includes(String(run.status || "").toLowerCase()));
+
+  if (!hasInitializedRunStatuses) {
+    runs.forEach((run) => {
+      runStatusMap.set(run.id, run.status);
+    });
+    hasInitializedRunStatuses = true;
+    if (hasActiveRuns) {
+      startScrapeMonitor();
+      startRunClock();
+    }
+    return;
+  }
+
+  runs.forEach((run) => {
+    const previousStatus = runStatusMap.get(run.id);
+    runStatusMap.set(run.id, run.status);
+
+    if (!previousStatus || previousStatus === run.status) {
+      return;
+    }
+
+    if (previousStatus === "queued" && run.status === "completed") {
+      const message = `${run.keyword} finished with ${formatNumber(run.total_results)} saved businesses.`;
+      setStatus(message);
+      showBrowserNotification("Scrape completed", message);
+      return;
+    }
+
+    if (previousStatus === "queued" && run.status === "failed") {
+      const message = `${run.keyword} failed during scraping. Refresh runs for the latest status.`;
+      setStatus(message, true);
+      showBrowserNotification("Scrape failed", message);
+    }
+  });
+
+  if (hasActiveRuns) {
+    startScrapeMonitor();
+    startRunClock();
+  } else {
+    stopScrapeMonitor();
+    stopRunClock();
+  }
 }
 
 function escapeHtml(value) {
@@ -562,23 +766,38 @@ function renderRuns(runs, pagination) {
   }
 
   runsEl.innerHTML = runs
-    .map(
-      (run) => `
-        <article class="run-card">
+    .map((run) => {
+      const progressMeta = getRunProgressMeta(run);
+      const runStatus = String(run.status || "queued").toLowerCase();
+      const resultsLine = progressMeta
+        ? progressMeta.targetLabel
+        : `${formatNumber(run.total_results)} saved businesses`;
+
+      return `
+        <article class="run-card" data-run-status="${escapeHtml(runStatus)}" data-created-at="${escapeHtml(run.created_at)}" data-max-results="${escapeHtml(String(run.max_results))}">
           <h3>${escapeHtml(run.keyword)}</h3>
           <p>${escapeHtml(run.location || "Worldwide")}</p>
-          <p class="meta">${formatNumber(run.total_results)} saved businesses</p>
+          <p class="meta">${resultsLine}</p>
           <p class="meta">Radius: ${escapeHtml(run.radius)} | Max: ${run.max_results}</p>
           <p class="meta">Mode: ${run.headless ? "Headless" : "Visible browser"}</p>
           <p class="meta">Status: ${escapeHtml((run.status || "queued").toUpperCase())}</p>
+          ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-timer">${escapeHtml(progressMeta.timerLabel)}</p>` : ""}
+          ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-eta">${escapeHtml(progressMeta.etaLabel)}</p>` : ""}
           <p class="meta">${formatDate(run.created_at)}</p>
           <div class="run-actions">
             ${run.status === "completed" ? buildExportButtons(run.id) : ""}
           </div>
         </article>
-      `
-    )
+      `;
+    })
     .join("");
+
+  if (runs.some((run) => ["queued", "running"].includes(String(run.status || "").toLowerCase()))) {
+    startRunClock();
+    refreshRunTimers();
+  } else {
+    stopRunClock();
+  }
 
   renderPagination(runsPaginationEl, pagination, async (nextPage) => {
     runListState.page = nextPage;
@@ -933,6 +1152,7 @@ async function loadRuns() {
     throw new Error("Failed to load scrape runs");
   }
   const data = await response.json();
+  updateRunNotifications(data.items || []);
   renderRuns(data.items, data.pagination);
 }
 
@@ -1210,6 +1430,7 @@ formEl.addEventListener("submit", async (event) => {
     }
 
     if (data.run?.status === "queued") {
+      await ensureNotificationPermission();
       setStatus(`Scrape queued successfully. The run is processing in the background. Access mode used: ${data.billing_mode}. Refresh runs in a few moments to see results.`);
     } else {
       setStatus(`Saved ${data.results.length} businesses. Access mode used: ${data.billing_mode}. Trial days left: ${data.remaining_credits}.`);

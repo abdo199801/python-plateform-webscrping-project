@@ -143,6 +143,15 @@ def create_scrape_run(db: Session, payload: Dict[str, Any], status: str = "queue
     return run
 
 
+def update_scrape_run_status(db: Session, run_id: int, status: str) -> None:
+    run = db.query(models.ScrapeRun).filter(models.ScrapeRun.id == run_id).first()
+    if run is None:
+        return
+
+    run.status = status
+    db.commit()
+
+
 def complete_scrape_run(db: Session, run_id: int, results: List[Dict[str, Any]]) -> models.ScrapeRun:
     run = db.query(models.ScrapeRun).filter(models.ScrapeRun.id == run_id).first()
     if run is None:
@@ -174,6 +183,7 @@ def fail_scrape_run(db: Session, run_id: int) -> None:
 def process_scrape_run(run_id: int, payload: Dict[str, Any], user_email: str) -> None:
     db = SessionLocal()
     try:
+        update_scrape_run_status(db, run_id, "running")
         results = run_scrape(payload)
         complete_scrape_run(db, run_id, results)
 
