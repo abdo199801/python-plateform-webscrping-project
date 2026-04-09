@@ -1,10 +1,11 @@
 from selenium import webdriver
+from selenium.webdriver import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
+from selenium.common.exceptions import ElementClickInterceptedException, NoSuchElementException, StaleElementReferenceException, TimeoutException, WebDriverException
 from selenium.webdriver.common.keys import Keys
 import pandas as pd
 import time
@@ -32,6 +33,7 @@ logger = logging.getLogger(__name__)
 PAGE_LOAD_TIMEOUT_SECONDS = 45
 RESULTS_PANEL_TIMEOUT_SECONDS = 25
 SCRIPT_TIMEOUT_SECONDS = 30
+DETAIL_PANEL_TIMEOUT_SECONDS = 12
 
 
 @dataclass
@@ -686,51 +688,178 @@ class UniversalGoogleMapsScraper:
         delay = random.uniform(self.delay_between_requests - 0.5, self.delay_between_requests + 0.5)
         time.sleep(delay)
 
+    def _find_results_panel(self):
+        selectors = [
+            "div[role='feed']",
+            "div[aria-label*='Results']",
+            "div.m6QErb",
+            "div.m6QErb.DxyBCb",
+            "div.m6QErb[aria-label*='Results']",
+        ]
+        for selector in selectors:
+            try:
+                return self.driver.find_element(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+        return None
+
+    def _get_business_cards(self):
+        selectors = [
+            "div[role='article']",
+            "div.Nv2PK",
+            "a.hfpxzc",
+            "div[jsaction*='mouseover:pane']",
+        ]
+        for selector in selectors:
+            try:
+                cards = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                cards = [card for card in cards if (card.text or "").strip()]
+                if cards:
+                    return cards
+            except Exception:
+                continue
+        return []
+
+    def _move_cursor_to_element(self, element) -> None:
+        try:
+            ActionChains(self.driver).move_to_element(element).pause(random.uniform(0.15, 0.45)).perform()
+        except Exception:
+            pass
+
+    def _human_scroll_results_panel(self, panel) -> None:
+        current_scroll = self.driver.execute_script("return arguments[0].scrollTop;", panel)
+        panel_height = self.driver.execute_script("return arguments[0].clientHeight;", panel)
+        step = random.randint(max(180, int(panel_height * 0.3)), max(320, int(panel_height * 0.7)))
+        next_scroll = current_scroll + step
+        self.driver.execute_script("arguments[0].scrollTo({top: arguments[1], behavior: 'smooth'});", panel, next_scroll)
+        time.sleep(random.uniform(1.1, 2.6))
+
+        if random.random() < 0.22:
+            correction = max(0, next_scroll - random.randint(40, 140))
+            self.driver.execute_script("arguments[0].scrollTo({top: arguments[1], behavior: 'smooth'});", panel, correction)
+            time.sleep(random.uniform(0.3, 0.9))
+
+    def _find_button_by_text(self, labels: List[str]):
+        lowered = [label.strip().lower() for label in labels if label.strip()]
+        xpaths = [
+            "//button",
+            "//div[@role='button']",
+            "//span/ancestor::button[1]",
+        ]
+        for xpath in xpaths:
+            try:
+                elements = self.driver.find_elements(By.XPATH, xpath)
+            except Exception:
+                continue
+            for element in elements:
+                try:
+                    text = (element.text or element.get_attribute("aria-label") or "").strip().lower()
+                except Exception:
+                    continue
+                if text and any(label in text for label in lowered):
+                    return element
+        return None
+
+    def _safe_click(self, element) -> bool:
+        try:
+            self._move_cursor_to_element(element)
+            element.click()
+            return True
+        except (ElementClickInterceptedException, StaleElementReferenceException, WebDriverException):
+            try:
+                self.driver.execute_script("arguments[0].click();", element)
+                return True
+            except Exception:
+                return False
+
+    def _extract_business_hours_and_description(self) -> Dict:
+        info = {"business_hours": "", "description": ""}
+
+        hour_selectors = [
+            "div[aria-label*='Hours']",
+            "table.eK4R0e tbody",
+            "div.OMl5r",
+        ]
+        for selector in hour_selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+            for element in elements:
+                text = (element.text or "").strip()
+                if text and len(text) > 6:
+                    info["business_hours"] = text.replace("\n", " | ")
+                    break
+            if info["business_hours"]:
+                break
+
+        description_selectors = [
+            "div.PYvSYb",
+            "div.DxyBCb div[role='main'] span[jscontroller]",
+            "div.fontBodyMedium span",
+        ]
+        for selector in description_selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+            for element in elements:
+                text = (element.text or "").strip()
+                if text and len(text) > 20:
+                    info["description"] = text
+                    break
+            if info["description"]:
+                break
+
+        return info
+
+    def _close_detail_panel(self) -> None:
+        close_selectors = [
+            "button[aria-label*='Close']",
+            "button[aria-label*='Back']",
+            "button[jsaction*='pane.back']",
+            "div[aria-label*='Close']",
+        ]
+        for selector in close_selectors:
+            try:
+                close_btn = self.driver.find_element(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+            if self._safe_click(close_btn):
+                time.sleep(random.uniform(0.7, 1.2))
+                return
+
+        try:
+            body = self.driver.find_element(By.TAG_NAME, 'body')
+            body.send_keys(Keys.ESCAPE)
+            time.sleep(random.uniform(0.6, 1.0))
+        except Exception:
+            pass
+
     def handle_google_maps_ui(self):
         """Handle various Google Maps UI elements and popups"""
         time.sleep(2)
 
-        # Handle cookie consent
-        cookie_selectors = [
-            "button[aria-label*='Accept all']",
-            "button:contains('Accept all')",
-            "button:contains('I agree')",
-            "form[action*='consent'] button",
-            "div[aria-modal='true'] button:last-child",
-            "button[jsaction*='cookie']"
-        ]
-
-        for selector in cookie_selectors:
-            try:
-                cookie_btn = self.wait.until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, selector))
-                )
-                cookie_btn.click()
-                logger.info("Cookies accepted")
-                time.sleep(1)
-                break
-            except:
-                continue
+        cookie_btn = self._find_button_by_text(["Accept all", "I agree", "Accept", "Tout accepter"])
+        if cookie_btn and self._safe_click(cookie_btn):
+            logger.info("Cookies accepted")
+            time.sleep(1)
 
         # Handle sign-in popup
         try:
             signin_close = self.driver.find_elements(By.CSS_SELECTOR,
                                                      "button[aria-label*='Close'], button[aria-label*='No thanks'], button[jsaction*='close']")
             if signin_close:
-                signin_close[0].click()
+                self._safe_click(signin_close[0])
                 time.sleep(1)
         except:
             pass
 
         # Handle "Got it" button for location
-        try:
-            got_it_btn = self.driver.find_elements(By.CSS_SELECTOR,
-                                                   "button:contains('Got it'), button:contains('OK'), button[jsaction*='pane.gotit']")
-            if got_it_btn:
-                got_it_btn[0].click()
-                time.sleep(1)
-        except:
-            pass
+        got_it_btn = self._find_button_by_text(["Got it", "OK", "Continue"])
+        if got_it_btn:
+            self._safe_click(got_it_btn)
+            time.sleep(1)
 
     def scroll_results_enhanced(self):
         """Enhanced scrolling with better element detection"""
@@ -743,35 +872,17 @@ class UniversalGoogleMapsScraper:
 
         while scroll_attempts < max_scroll_attempts:
             try:
-                # Find the results container
-                results_containers = [
-                    "div[role='feed']",
-                    "div[aria-label*='Results']",
-                    "div.m6QErb",
-                    "div.m6QErb.DxyBCb",
-                    "div.m6QErb[aria-label*='Results']"
-                ]
-
-                results_panel = None
-                for selector in results_containers:
-                    try:
-                        results_panel = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        break
-                    except:
-                        continue
+                results_panel = self._find_results_panel()
 
                 if not results_panel:
                     logger.warning("Could not find results panel")
                     break
 
-                # Scroll
-                self.driver.execute_script(
-                    "arguments[0].scrollTop = arguments[0].scrollHeight;",
-                    results_panel
-                )
+                visible_cards = self._get_business_cards()
+                if visible_cards:
+                    self._move_cursor_to_element(random.choice(visible_cards[: min(4, len(visible_cards))]))
 
-                # Random delay to mimic human
-                time.sleep(random.uniform(1.5, 3))
+                self._human_scroll_results_panel(results_panel)
 
                 # Check current scroll height
                 new_height = self.driver.execute_script(
@@ -780,8 +891,7 @@ class UniversalGoogleMapsScraper:
                 )
 
                 # Check if we have enough results
-                cards = self.driver.find_elements(By.CSS_SELECTOR,
-                                                  "div[role='article'], div.Nv2PK, a.hfpxzc")
+                cards = self._get_business_cards()
 
                 logger.info(f"Loaded {len(cards)} results so far...")
 
@@ -800,13 +910,9 @@ class UniversalGoogleMapsScraper:
 
                 scroll_attempts += 1
 
-                # Occasionally scroll a bit more randomly
-                if scroll_attempts % 5 == 0:
-                    self.driver.execute_script(
-                        "arguments[0].scrollTop = arguments[0].scrollTop + 300;",
-                        results_panel
-                    )
-                    time.sleep(0.5)
+                if scroll_attempts % 4 == 0 and cards:
+                    self._move_cursor_to_element(random.choice(cards[: min(6, len(cards))]))
+                    time.sleep(random.uniform(0.2, 0.5))
 
             except Exception as e:
                 logger.warning(f"Error during scrolling: {e}")
@@ -986,6 +1092,7 @@ class UniversalGoogleMapsScraper:
         for selector in card_selectors:
             try:
                 cards = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                cards = [card for card in cards if (card.text or "").strip()]
                 if cards:
                     logger.info(f"Found {len(cards)} business cards using selector: {selector}")
                     break
@@ -1002,9 +1109,12 @@ class UniversalGoogleMapsScraper:
 
         # Scrape each business
         results = []
-        for i, card in enumerate(cards[:self.max_results]):
+        for i in range(min(len(cards), self.max_results)):
             try:
-                business_data = self.scrape_business_card(card, i + 1, location_info)
+                current_cards = self._get_business_cards()
+                if i >= len(current_cards):
+                    break
+                business_data = self.scrape_business_card(current_cards[i], i + 1, location_info)
                 if business_data:
                     results.append(business_data)
                     logger.info(
@@ -1038,7 +1148,8 @@ class UniversalGoogleMapsScraper:
 
             # Scroll to card
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', behavior: 'smooth'});", card)
-            time.sleep(0.5)
+            self._move_cursor_to_element(card)
+            time.sleep(random.uniform(0.4, 0.9))
 
             # Extract basic info from card
             card_info = self.extract_basic_card_info(card)
@@ -1060,9 +1171,14 @@ class UniversalGoogleMapsScraper:
 
             # Try to get detailed info
             try:
-                # Click on card to open details
-                card.click()
-                time.sleep(2)
+                previous_url = self.driver.current_url
+                if not self._safe_click(card):
+                    return None
+
+                WebDriverWait(self.driver, DETAIL_PANEL_TIMEOUT_SECONDS).until(
+                    lambda driver: driver.current_url != previous_url or len(driver.find_elements(By.CSS_SELECTOR, "h1, div[role='main'] h1, button[data-item-id*='address']")) > 0
+                )
+                time.sleep(random.uniform(1.2, 2.0))
 
                 # Get current URL
                 current_url = self.driver.current_url
@@ -1079,38 +1195,14 @@ class UniversalGoogleMapsScraper:
                 # Extract detailed information
                 details = self._extract_contact_info()
                 details.update(self._extract_address_info())
+                details.update(self._extract_business_hours_and_description())
 
                 # Update data with details
                 for key, value in details.items():
                     if hasattr(data, key) and value:
                         setattr(data, key, value)
 
-                # Try to close detail panel
-                try:
-                    close_selectors = [
-                        "button[aria-label*='Close']",
-                        "button[aria-label*='Back']",
-                        "button[jsaction*='pane.back']",
-                        "div[aria-label*='Close']"
-                    ]
-
-                    for selector in close_selectors:
-                        try:
-                            close_btn = self.driver.find_element(By.CSS_SELECTOR, selector)
-                            close_btn.click()
-                            time.sleep(1)
-                            break
-                        except:
-                            continue
-                except:
-                    # Press Escape as fallback
-                    try:
-                        from selenium.webdriver.common.keys import Keys
-                        body = self.driver.find_element(By.TAG_NAME, 'body')
-                        body.send_keys(Keys.ESCAPE)
-                        time.sleep(1)
-                    except:
-                        pass
+                self._close_detail_panel()
 
             except Exception as e:
                 logger.debug(f"Couldn't open detail panel: {e}")
