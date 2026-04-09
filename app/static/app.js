@@ -13,6 +13,11 @@ const runsPaginationEl = document.getElementById("runsPagination");
 const businessesPaginationEl = document.getElementById("businessesPagination");
 const businessExportsEl = document.getElementById("businessExports");
 const formEl = document.getElementById("scrape-form");
+const mapPreviewFrameEl = document.getElementById("mapPreviewFrame");
+const mapPreviewTitleEl = document.getElementById("mapPreviewTitle");
+const mapPreviewMetaEl = document.getElementById("mapPreviewMeta");
+const openMapPreviewLinkEl = document.getElementById("openMapPreviewLink");
+const refreshMapPreviewEl = document.getElementById("refreshMapPreview");
 const profileFormEl = document.getElementById("profile-form");
 const userCreditsEl = document.getElementById("userCredits");
 const statusCreditsEl = document.getElementById("statusCredits");
@@ -41,6 +46,7 @@ const scrapeButtonEl = document.getElementById("scrapeBtn");
 const saveProfileButtonEl = document.getElementById("saveProfileBtn");
 const appConfig = window.APP_CONFIG || {};
 const apiBaseUrl = (appConfig.apiBaseUrl || "").replace(/\/+$/, "");
+const googleMapsEmbedApiKey = (appConfig.googleMapsEmbedApiKey || "").trim();
 const nativeFetch = window.fetch.bind(window);
 
 function resolveApiUrl(input) {
@@ -364,6 +370,48 @@ function formatStatusLabel(value) {
   }
 
   return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function buildMapQuery(keyword, location) {
+  return [keyword, location]
+    .map((value) => (value || "").trim())
+    .filter(Boolean)
+    .join(" ");
+}
+
+function buildGoogleMapsUrl(keyword, location) {
+  const query = buildMapQuery(keyword, location) || "Google Maps";
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query)}`;
+}
+
+function buildGoogleMapsEmbedUrl(keyword, location) {
+  const query = buildMapQuery(keyword, location) || "Google Maps";
+  if (googleMapsEmbedApiKey) {
+    return `https://www.google.com/maps/embed/v1/search?key=${encodeURIComponent(googleMapsEmbedApiKey)}&q=${encodeURIComponent(query)}`;
+  }
+  return `https://maps.google.com/maps?q=${encodeURIComponent(query)}&output=embed`;
+}
+
+function updateMapPreview(keyword, location) {
+  if (!mapPreviewFrameEl || !mapPreviewTitleEl || !mapPreviewMetaEl || !openMapPreviewLinkEl) {
+    return;
+  }
+
+  const cleanKeyword = (keyword || "").trim();
+  const cleanLocation = (location || "").trim();
+  const query = buildMapQuery(cleanKeyword, cleanLocation);
+
+  mapPreviewTitleEl.textContent = query || "Live Search Preview";
+  mapPreviewMetaEl.textContent = query
+    ? `Previewing Google Maps for ${query}. Use this card to validate the target area before or during scraping.`
+    : "Type a keyword and location to preview the map inside the platform.";
+  mapPreviewFrameEl.src = buildGoogleMapsEmbedUrl(cleanKeyword, cleanLocation);
+  openMapPreviewLinkEl.href = buildGoogleMapsUrl(cleanKeyword, cleanLocation);
+}
+
+function previewRunMap(keyword, location) {
+  updateMapPreview(keyword, location);
+  document.getElementById("scraper").scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 function buildBusinessQueryString() {
@@ -848,13 +896,14 @@ function renderRuns(runs, pagination) {
           <p>${escapeHtml(run.location || "Worldwide")}</p>
           <p class="meta">${resultsLine}</p>
           <p class="meta">Radius: ${escapeHtml(run.radius)} | Max: ${run.max_results}</p>
-          <p class="meta">Mode: ${run.headless ? "Headless" : "Visible browser"}</p>
+          <p class="meta">Mode: ${run.headless ? "Background browser" : "Standard browser"}</p>
           <p class="meta">Status: ${escapeHtml((run.status || "queued").toUpperCase())}</p>
           ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-timer">${escapeHtml(progressMeta.timerLabel)}</p>` : ""}
           ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-eta">${escapeHtml(progressMeta.etaLabel)}</p>` : ""}
           ${run.error_message ? `<p class="meta">Reason: ${escapeHtml(run.error_message)}</p>` : ""}
           <p class="meta">${formatDate(run.created_at)}</p>
           <div class="run-actions">
+            <button type="button" class="secondary map-preview-button" data-map-preview data-keyword="${escapeHtml(run.keyword)}" data-location="${escapeHtml(run.location || "")}">Preview Map</button>
             ${run.status === "completed" ? buildExportButtons(run.id) : ""}
           </div>
         </article>
@@ -872,6 +921,12 @@ function renderRuns(runs, pagination) {
   renderPagination(runsPaginationEl, pagination, async (nextPage) => {
     runListState.page = nextPage;
     await loadRuns();
+  });
+
+  runsEl.querySelectorAll("[data-map-preview]").forEach((button) => {
+    button.addEventListener("click", () => {
+      previewRunMap(button.dataset.keyword || "", button.dataset.location || "");
+    });
   });
 }
 
@@ -1474,6 +1529,7 @@ formEl.addEventListener("submit", async (event) => {
     headless: formData.get("headless") === "on",
     save_files: formData.get("save_files") === "on",
   };
+  updateMapPreview(String(payload.keyword || ""), String(payload.location || ""));
   const maxResultsAllowed = accessState?.has_active_subscription && accessState.subscription_tier === "enterprise"
     ? 500
     : DEFAULT_MAX_RESULTS_PER_SCRAPE;
@@ -1483,7 +1539,7 @@ formEl.addEventListener("submit", async (event) => {
   }
 
   scrapeButtonEl.disabled = true;
-  setStatus(`Running scrape in ${payload.headless ? "headless" : "visible"} mode. Selenium is opening Google Maps and collecting businesses...`);
+  setStatus(`Running scrape in ${payload.headless ? "background" : "standard"} mode. The Google Maps preview stays in-platform while businesses are collected...`);
 
   try {
     const response = await fetch("/api/scrapes", {
@@ -1647,7 +1703,33 @@ if (userEmail) {
   syncEmailFields(userEmail);
 }
 
+formEl.querySelector('input[name="keyword"]').addEventListener("input", () => {
+  updateMapPreview(
+    formEl.querySelector('input[name="keyword"]').value,
+    formEl.querySelector('input[name="location"]').value,
+  );
+});
+
+formEl.querySelector('input[name="location"]').addEventListener("input", () => {
+  updateMapPreview(
+    formEl.querySelector('input[name="keyword"]').value,
+    formEl.querySelector('input[name="location"]').value,
+  );
+});
+
+refreshMapPreviewEl.addEventListener("click", () => {
+  updateMapPreview(
+    formEl.querySelector('input[name="keyword"]').value,
+    formEl.querySelector('input[name="location"]').value,
+  );
+  setStatus("Google Maps preview refreshed.");
+});
+
 syncAdminLinks();
+updateMapPreview(
+  formEl.querySelector('input[name="keyword"]').value,
+  formEl.querySelector('input[name="location"]').value,
+);
 renderBusinessExportToolbar();
 renderDashboardEmpty("Save your company profile to unlock the personal dashboard and self-service subscription controls.");
 syncLeadFilterForm();

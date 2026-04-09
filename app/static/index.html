@@ -210,42 +210,66 @@
         ⚠️ Your trial is over. Subscribe to Professional or Enterprise to keep scraping.
       </div>
       <div class="payment-banner" id="paymentBanner" style="display: none;"></div>
-      <form id="scrape-form" class="form-grid">
-        <label>
-          Keyword *
-          <input name="keyword" placeholder="restaurants, hotels, dentists..." required>
-        </label>
-        <label>
-          Location
-          <input name="location" placeholder="Paris, France">
-        </label>
-        <label>
-          Radius (meters)
-          <input name="radius" value="10000">
-        </label>
-        <label>
-          Max Results
-          <input name="max_results" type="number" value="25" min="1" max="100">
-        </label>
-        <label class="checkbox">
-          <input name="headless" type="checkbox">
-          Headless mode for web scraping
-        </label>
-        <label class="checkbox">
-          <input name="save_files" type="checkbox" checked>
-          Export CSV/XLSX files
-        </label>
-        <label class="email-field">
-          Your Email *
-          <input name="email" type="email" placeholder="your@email.com" required>
-        </label>
-        <button type="submit" id="scrapeBtn">
-          <span class="btn-icon">⌕</span>
-          Run Scrape
-        </button>
-      </form>
+      <div class="scrape-layout">
+        <form id="scrape-form" class="form-grid scrape-form-grid">
+          <label>
+            Keyword *
+            <input name="keyword" placeholder="restaurants, hotels, dentists..." required>
+          </label>
+          <label>
+            Location
+            <input name="location" placeholder="Paris, France">
+          </label>
+          <label>
+            Radius (meters)
+            <input name="radius" value="10000">
+          </label>
+          <label>
+            Max Results
+            <input name="max_results" type="number" value="25" min="1" max="100">
+          </label>
+          <label class="checkbox">
+            <input name="headless" type="checkbox" checked>
+            Run scrape in background mode
+          </label>
+          <label class="checkbox">
+            <input name="save_files" type="checkbox" checked>
+            Export CSV/XLSX files
+          </label>
+          <label class="email-field">
+            Your Email *
+            <input name="email" type="email" placeholder="your@email.com" required>
+          </label>
+          <button type="submit" id="scrapeBtn">
+            <span class="btn-icon">⌕</span>
+            Run Scrape
+          </button>
+        </form>
+        <aside class="map-preview-card" id="mapPreviewCard">
+          <div class="map-preview-header">
+            <div>
+              <p class="eyebrow">Google Maps</p>
+              <h3 id="mapPreviewTitle">Live Search Preview</h3>
+            </div>
+            <button type="button" id="refreshMapPreview" class="secondary">Refresh map</button>
+          </div>
+          <p id="mapPreviewMeta" class="section-subtitle">Type a keyword and location to preview the map inside the platform.</p>
+          <div class="map-preview-frame-wrap">
+            <iframe
+              id="mapPreviewFrame"
+              title="Google Maps preview"
+              loading="lazy"
+              referrerpolicy="no-referrer-when-downgrade"
+              allowfullscreen
+            ></iframe>
+          </div>
+          <div class="map-preview-actions">
+            <a id="openMapPreviewLink" class="hero-link secondary-link" href="https://www.google.com/maps" target="_blank" rel="noreferrer">Open full Google Maps</a>
+          </div>
+        </aside>
+      </div>
       <p id="status" class="status">Ready. Your current trial window shows <span id="statusCredits">0</span> days left.</p>
-      <p class="status helper-status">Enable headless mode to keep the browser hidden while Selenium scrapes Google Maps.</p>
+      <p class="status helper-status">The map preview stays in this page. Background mode keeps Selenium from trying to open a separate browser window.</p>
     </section>
 
     <section id="leadDesk" class="panel">

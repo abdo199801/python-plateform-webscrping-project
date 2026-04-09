@@ -102,6 +102,7 @@ def get_runtime_config() -> dict[str, str]:
     return {
         "apiBaseUrl": os.getenv("API_BASE_URL", "").strip().rstrip("/"),
         "frontendUrl": os.getenv("FRONTEND_URL", "").strip().rstrip("/"),
+        "googleMapsEmbedApiKey": os.getenv("GOOGLE_MAPS_EMBED_API_KEY", "").strip(),
     }
 
 
