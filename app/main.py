@@ -327,6 +327,11 @@ def index():
     return FileResponse(STATIC_DIR / "index.html")
 
 
+@app.head("/", include_in_schema=False)
+def index_head():
+    return Response(status_code=200)
+
+
 @app.get("/admin", include_in_schema=False)
 def admin_dashboard():
     """Admin dashboard page."""
@@ -352,6 +357,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 @app.get("/api/health")
 def health_check():
     return {"status": "ok", "database_ready": getattr(app.state, "db_ready", False)}
+
+
+@app.head("/api/health", include_in_schema=False)
+def health_check_head():
+    return Response(status_code=200)
 
 
 @app.post("/api/scrapes", response_model=ScrapeSummaryResponse)
