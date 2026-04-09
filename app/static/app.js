@@ -400,6 +400,37 @@ function buildBusinessQueryString() {
   return params.toString();
 }
 
+function buildBusinessExportQueryString() {
+  const params = new URLSearchParams();
+
+  if (userEmail) {
+    params.set("email", userEmail);
+  }
+  if (businessListState.search) {
+    params.set("search", businessListState.search);
+  }
+  if (businessListState.city) {
+    params.set("city", businessListState.city);
+  }
+  if (businessListState.country) {
+    params.set("country", businessListState.country);
+  }
+  if (businessListState.category) {
+    params.set("category", businessListState.category);
+  }
+  if (businessListState.leadStatus) {
+    params.set("lead_status", businessListState.leadStatus);
+  }
+  if (businessListState.tag) {
+    params.set("tag", businessListState.tag);
+  }
+  if (businessListState.savedOnly) {
+    params.set("saved_only", "true");
+  }
+
+  return params.toString();
+}
+
 function syncLeadFilterForm() {
   if (!leadFilterFormEl) {
     return;
@@ -652,8 +683,33 @@ function buildExportButtons(runId, variant = "inline") {
     .join("");
 }
 
+function buildAllDataExportButtons(variant = "toolbar") {
+  const queryString = buildBusinessExportQueryString();
+
+  return ["xlsx", "csv", "pdf"]
+    .map((format) => {
+      const label = format === "xlsx" ? "All Data Excel" : `All Data ${format.toUpperCase()}`;
+      const href = `/api/businesses/exports/${format}${queryString ? `?${queryString}` : ""}`;
+      return `
+        <a class="secondary export-button ${variant}" href="${escapeHtml(href)}" download>
+          ${escapeHtml(label)}
+        </a>
+      `;
+    })
+    .join("");
+}
+
 function renderBusinessExportToolbar() {
-  businessExportsEl.innerHTML = buildExportButtons(latestRunId, "toolbar");
+  businessExportsEl.innerHTML = `
+    <div class="export-group">
+      <span class="export-group-label">Latest run</span>
+      ${buildExportButtons(latestRunId, "toolbar")}
+    </div>
+    <div class="export-group">
+      <span class="export-group-label">All matching data</span>
+      ${buildAllDataExportButtons("toolbar")}
+    </div>
+  `;
 }
 
 function populateProfileForm(profile) {

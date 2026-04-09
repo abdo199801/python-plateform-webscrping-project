@@ -490,42 +490,17 @@ def build_pagination(page: int, page_size: int, total: int) -> PaginationMetaRes
     return PaginationMetaResponse(page=page, page_size=page_size, total=total, total_pages=total_pages)
 
 
-@app.get("/api/scrapes", response_model=list[ScrapeRunResponse] | PaginatedScrapeRunsResponse)
-def list_scrape_runs(
-    db: Session = Depends(get_db),
-    page: Optional[int] = Query(default=None, ge=1),
-    page_size: int = Query(default=6, ge=1, le=50),
-):
-    query = (
-        db.query(ScrapeRun)
-        .options(joinedload(ScrapeRun.businesses))
-        .order_by(ScrapeRun.created_at.desc())
-    )
-
-    if page is None:
-        return query.all()
-
-    total = query.count()
-    offset = (page - 1) * page_size
-    runs = query.offset(offset).limit(page_size).all()
-    return {"items": runs, "pagination": build_pagination(page, page_size, total)}
-
-
-@app.get("/api/businesses", response_model=list[BusinessResponse] | PaginatedBusinessesResponse)
-def list_businesses(
-    db: Session = Depends(get_db),
-    current_user=Depends(get_optional_platform_user),
-    email: Optional[str] = Query(default=None),
-    search: Optional[str] = Query(default=None),
-    city: Optional[str] = Query(default=None),
-    country: Optional[str] = Query(default=None),
-    category: Optional[str] = Query(default=None),
-    lead_status: Optional[str] = Query(default=None),
-    tag: Optional[str] = Query(default=None),
-    saved_only: bool = Query(default=False),
-    limit: int = Query(default=100, ge=1, le=500),
-    page: Optional[int] = Query(default=None, ge=1),
-    page_size: int = Query(default=10, ge=1, le=100),
+def build_business_query(
+    db: Session,
+    current_user,
+    email: Optional[str] = None,
+    search: Optional[str] = None,
+    city: Optional[str] = None,
+    country: Optional[str] = None,
+    category: Optional[str] = None,
+    lead_status: Optional[str] = None,
+    tag: Optional[str] = None,
+    saved_only: bool = False,
 ):
     query = db.query(Business).order_by(Business.created_at.desc())
 
@@ -563,6 +538,59 @@ def list_businesses(
     elif lead_status or tag or saved_only:
         raise HTTPException(status_code=400, detail="email is required when filtering lead pipeline data")
 
+    return query
+
+
+@app.get("/api/scrapes", response_model=list[ScrapeRunResponse] | PaginatedScrapeRunsResponse)
+def list_scrape_runs(
+    db: Session = Depends(get_db),
+    page: Optional[int] = Query(default=None, ge=1),
+    page_size: int = Query(default=6, ge=1, le=50),
+):
+    query = (
+        db.query(ScrapeRun)
+        .options(joinedload(ScrapeRun.businesses))
+        .order_by(ScrapeRun.created_at.desc())
+    )
+
+    if page is None:
+        return query.all()
+
+    total = query.count()
+    offset = (page - 1) * page_size
+    runs = query.offset(offset).limit(page_size).all()
+    return {"items": runs, "pagination": build_pagination(page, page_size, total)}
+
+
+@app.get("/api/businesses", response_model=list[BusinessResponse] | PaginatedBusinessesResponse)
+def list_businesses(
+    db: Session = Depends(get_db),
+    current_user=Depends(get_optional_platform_user),
+    email: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    city: Optional[str] = Query(default=None),
+    country: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    lead_status: Optional[str] = Query(default=None),
+    tag: Optional[str] = Query(default=None),
+    saved_only: bool = Query(default=False),
+    limit: int = Query(default=100, ge=1, le=500),
+    page: Optional[int] = Query(default=None, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+):
+    query = build_business_query(
+        db,
+        current_user,
+        email=email,
+        search=search,
+        city=city,
+        country=country,
+        category=category,
+        lead_status=lead_status,
+        tag=tag,
+        saved_only=saved_only,
+    )
+
     if page is None:
         items = query.limit(limit).all()
         if not email:
@@ -579,6 +607,62 @@ def list_businesses(
     lead_map = get_lead_map(db, email, [item.id for item in items])
     serialized_items = [serialize_business_with_lead(item, lead_map.get(item.id)) for item in items]
     return {"items": serialized_items, "pagination": build_pagination(page, page_size, total)}
+
+
+@app.get("/api/businesses/exports/{file_format}")
+def download_businesses_export(
+    file_format: str,
+    db: Session = Depends(get_db),
+    current_user=Depends(get_optional_platform_user),
+    email: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    city: Optional[str] = Query(default=None),
+    country: Optional[str] = Query(default=None),
+    category: Optional[str] = Query(default=None),
+    lead_status: Optional[str] = Query(default=None),
+    tag: Optional[str] = Query(default=None),
+    saved_only: bool = Query(default=False),
+):
+    query = build_business_query(
+        db,
+        current_user,
+        email=email,
+        search=search,
+        city=city,
+        country=country,
+        category=category,
+        lead_status=lead_status,
+        tag=tag,
+        saved_only=saved_only,
+    )
+    businesses = query.all()
+
+    if not businesses:
+        raise HTTPException(status_code=404, detail="No businesses match the current filters")
+
+    label_parts = ["all_businesses"]
+    if search:
+        label_parts.append(search)
+    if city:
+        label_parts.append(city)
+    if country:
+        label_parts.append(country)
+    if category:
+        label_parts.append(category)
+
+    try:
+        from app.export_service import export_businesses_file
+
+        export_path = export_businesses_file(businesses, file_format.lower(), "_".join(label_parts))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    media_types = {
+        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "csv": "text/csv",
+        "pdf": "application/pdf",
+    }
+    return FileResponse(export_path, filename=export_path.name, media_type=media_types[file_format.lower()])
 
 
 @app.get("/api/businesses/{business_id}")

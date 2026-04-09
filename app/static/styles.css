@@ -188,6 +188,22 @@ h2,
   gap: 8px;
 }
 
+.export-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.export-group-label {
+  font-size: 0.82rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin-right: 4px;
+}
+
 .export-button {
   display: inline-flex;
   align-items: center;
