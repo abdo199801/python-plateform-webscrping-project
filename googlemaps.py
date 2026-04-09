@@ -22,6 +22,11 @@ import logging
 from dataclasses import dataclass, asdict
 import random
 
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:
+    ChromeDriverManager = None
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -451,63 +456,59 @@ class UniversalGoogleMapsScraper:
 
         driver = None
         errors = []
-        
-        # Try multiple initialization methods for better compatibility
-        # Method 1: Basic Chrome initialization
-        try:
-            driver = webdriver.Chrome(options=chrome_options)
-            logger.info("WebDriver initialized successfully (Method 1)")
-        except Exception as e1:
-            errors.append(f"Method 1: {e1}")
-            logger.warning(f"Method 1 failed: {e1}")
-            
-            # Method 2: With explicit Service
+
+        def try_create_driver(label: str, factory):
+            nonlocal driver
             try:
-                service = Service()
-                driver = webdriver.Chrome(service=service, options=chrome_options)
-                logger.info("WebDriver initialized successfully (Method 2)")
-            except Exception as e2:
-                errors.append(f"Method 2: {e2}")
-                logger.warning(f"Method 2 failed: {e2}")
-                
-                # Method 3: Try with webdriver-manager for automatic ChromeDriver management
-                try:
-                    from selenium.webdriver.chrome.service import Service as ChromeService
-                    from webdriver_manager.chrome import ChromeDriverManager
-                    from webdriver_manager.core.os import ChromeType
-                    
-                    logger.info("Attempting to use webdriver-manager for automatic ChromeDriver installation...")
-                    service = ChromeService(ChromeDriverManager(chrome_type=ChromeType.GOOGLE).install())
-                    driver = webdriver.Chrome(service=service, options=chrome_options)
-                    logger.info("ChromeDriver installed/updated successfully via webdriver-manager")
-                except Exception as e3:
-                    errors.append(f"Method 3: {e3}")
-                    logger.warning(f"Method 3 failed: {e3}")
-                    
-                    # Method 4: Try with Edge browser (built into Windows)
-                    try:
-                        logger.info("Attempting to use Microsoft Edge as fallback...")
-                        from selenium.webdriver.edge.options import Options as EdgeOptions
-                        from selenium.webdriver.edge.service import Service as EdgeService
-                        
-                        edge_options = EdgeOptions()
-                        edge_options.use_chromium = True
-                        edge_options.add_argument("--headless") if self.headless else None
-                        edge_options.add_argument("--no-sandbox")
-                        edge_options.add_argument("--disable-dev-shm-usage")
-                        edge_options.add_argument("--disable-gpu")
-                        edge_options.add_argument(f"--user-data-dir={tempfile.mkdtemp(prefix='edge_profile_')}")
-                        edge_options.add_argument("--remote-debugging-port=9223")
-                        edge_options.add_argument("--disable-blink-features=AutomationControlled")
-                        edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
-                        edge_options.add_experimental_option('useAutomationExtension', False)
-                        edge_options.add_argument(f'user-agent={user_agent}')
-                        
-                        driver = webdriver.Edge(options=edge_options)
-                        logger.info("WebDriver initialized successfully using Edge (Method 4)")
-                    except Exception as e4:
-                        errors.append(f"Method 4 (Edge): {e4}")
-                        logger.warning(f"Method 4 (Edge) failed: {e4}")
+                driver = factory()
+                logger.info(f"WebDriver initialized successfully ({label})")
+                return True
+            except Exception as exc:
+                errors.append(f"{label}: {exc}")
+                logger.warning(f"{label} failed: {exc}")
+                return False
+
+        def build_webdriver_manager_driver():
+            if ChromeDriverManager is None:
+                raise RuntimeError("webdriver-manager is not installed in the active Python environment")
+
+            os.environ.setdefault("WDM_LOCAL", "1")
+            driver_path = ChromeDriverManager().install()
+            service = Service(driver_path)
+            return webdriver.Chrome(service=service, options=chrome_options)
+        
+        # Try multiple initialization methods for better compatibility.
+        if ChromeDriverManager is not None:
+            logger.info("Attempting to use webdriver-manager for automatic ChromeDriver installation...")
+            try_create_driver("webdriver-manager", build_webdriver_manager_driver)
+
+        if driver is None:
+            try_create_driver("selenium-manager", lambda: webdriver.Chrome(options=chrome_options))
+
+        if driver is None:
+            try_create_driver("explicit-service", lambda: webdriver.Chrome(service=Service(), options=chrome_options))
+
+        if driver is None:
+            logger.info("Attempting to use Microsoft Edge as fallback...")
+
+            def build_edge_driver():
+                from selenium.webdriver.edge.options import Options as EdgeOptions
+
+                edge_options = EdgeOptions()
+                edge_options.use_chromium = True
+                if self.headless:
+                    edge_options.add_argument("--headless=new")
+                edge_options.add_argument("--no-sandbox")
+                edge_options.add_argument("--disable-dev-shm-usage")
+                edge_options.add_argument("--disable-gpu")
+                edge_options.add_argument(f"--user-data-dir={tempfile.mkdtemp(prefix='edge_profile_')}")
+                edge_options.add_argument("--disable-blink-features=AutomationControlled")
+                edge_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+                edge_options.add_experimental_option('useAutomationExtension', False)
+                edge_options.add_argument(f'user-agent={user_agent}')
+                return webdriver.Edge(options=edge_options)
+
+            try_create_driver("edge-fallback", build_edge_driver)
         
         if driver is None:
             logger.error("All WebDriver initialization methods failed:")
