@@ -990,7 +990,7 @@ def create_payment_session(
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db)
 ):
-    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
+    raise HTTPException(status_code=503, detail="Checkout is currently unavailable.")
 
 
 @app.post("/api/subscription/create-checkout-session")
@@ -999,7 +999,7 @@ def create_subscription_session(
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db)
 ):
-    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
+    raise HTTPException(status_code=503, detail="Checkout is currently unavailable.")
 
 
 @app.post("/api/paypal/orders")
@@ -1008,17 +1008,17 @@ def create_paypal_order(
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db),
 ):
-    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
+    raise HTTPException(status_code=503, detail="Checkout is currently unavailable.")
 
 
 @app.post("/api/paypal/orders/{order_id}/capture")
 def capture_paypal_order(order_id: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
-    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
+    raise HTTPException(status_code=503, detail="Checkout is currently unavailable.")
 
 
 @app.post("/api/webhook", include_in_schema=False)
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    raise HTTPException(status_code=503, detail="Payment integration is disabled for now.")
+    raise HTTPException(status_code=503, detail="Checkout is currently unavailable.")
 
 
 @app.get("/api/user/credits/{email}")

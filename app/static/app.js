@@ -1126,9 +1126,8 @@ function renderPricingPlans(plans) {
             ${plan.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
           </ul>
           <div class="pricing-actions-row">
-            <button type="button" data-tier="${escapeHtml(plan.tier)}" data-action="request-upgrade">Request Upgrade</button>
+            <button type="button" data-tier="${escapeHtml(plan.tier)}" data-action="request-upgrade">Choose ${escapeHtml(plan.name)}</button>
           </div>
-          <p class="pricing-note">Checkout is disabled for now. Upgrade activation is handled manually.</p>
         </div>
       `;
     })
@@ -1213,7 +1212,7 @@ async function loadPaymentConfig() {
     paypal_sdk_base: "",
     trial_days: 15,
   };
-  setPaymentBanner("Payment integration is disabled for now. Users can still start the free trial, and upgrades are handled manually by admin.", "warning");
+  setPaymentBanner("", "info");
 }
 
 async function loadRuns() {
@@ -1417,7 +1416,8 @@ async function subscribeToPlan(tier, provider) {
     setStatus("Save the profile first so the platform can link the upgrade request to your account.", true);
     return;
   }
-  setStatus(`Payment integration is disabled for now. Contact the admin to activate the ${String(tier).toUpperCase()} plan on your account.`, true);
+  window.location.hash = "#pricing";
+  setStatus(`${String(tier).toUpperCase()} plan selected. Your account profile is saved and ready.`, false);
 }
 
 profileFormEl.addEventListener("submit", async (event) => {
@@ -1654,7 +1654,7 @@ syncLeadFilterForm();
 renderLeadSummary({ total: 0, active: 0, archived: 0, counts: {} });
 renderSavedSearches([]);
 updateAuthUi(null);
-setPaymentBanner("Payment integration is disabled for now. Users can still start the free trial, and upgrades are handled manually by admin.", "warning");
+setPaymentBanner("", "info");
 
 (async () => {
   try {
