@@ -13,6 +13,16 @@ class PlatformUserUpsertRequest(BaseModel):
     preferred_payment_provider: PaymentProvider = PaymentProvider.CARD
 
 
+class PlatformUserRegisterRequest(PlatformUserUpsertRequest):
+    password: str
+    confirm_password: str
+
+
+class PlatformUserLoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
 class PlatformUserResponse(BaseModel):
     id: int
     email: str
@@ -20,16 +30,24 @@ class PlatformUserResponse(BaseModel):
     company_name: str
     phone: str
     country: Optional[str]
+    is_active: bool
     preferred_payment_provider: PaymentProvider
     trial_started_at: datetime
     trial_ends_at: datetime
     total_scrapes: int
     last_scrape_at: Optional[datetime]
+    last_login: Optional[datetime]
     notes: Optional[str]
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+
+class PlatformAuthResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user: PlatformUserResponse
 
 
 class AccessStatusResponse(BaseModel):

@@ -52,6 +52,55 @@ uvicorn app.main:app --reload
 - Set `FRONTEND_URL` to the public URL of the frontend and `ALLOWED_ORIGINS` to the exact frontend origins that should call the API.
 - If the frontend is served from a different host than the API, set `API_BASE_URL` to the public backend URL so browser requests go to the right server.
 - To guarantee admin login on a fresh production database, set `ADMIN_EMAIL` and `ADMIN_PASSWORD`. The app will create that admin account automatically on startup if it does not already exist.
+- Vercel should not be treated as the backend host for this project in its current form. The browser UI can live on Vercel, but the FastAPI API should run on a Python host such as Render or Railway.
+- The Selenium scraper may need a containerized host or additional browser setup in production. Login, admin, and data APIs are the first pieces to move successfully.
+
+## Recommended Deploy Split
+
+Use this layout:
+
+- Frontend: Vercel
+- Backend API: Render
+- Database: Neon
+
+Example values after the backend is deployed on Render:
+
+```dotenv
+FRONTEND_URL=https://your-frontend.vercel.app
+ALLOWED_ORIGINS=https://your-frontend.vercel.app
+API_BASE_URL=https://your-render-service.onrender.com
+DATABASE_URL=postgresql://...neon...&sslmode=require
+```
+
+For the Vercel frontend, set the public backend URL that the browser must call:
+
+```dotenv
+API_BASE_URL=https://your-render-service.onrender.com
+```
+
+For the Render backend, set at least:
+
+```dotenv
+DATABASE_URL=postgresql://...neon...&sslmode=require
+FRONTEND_URL=https://your-frontend.vercel.app
+ALLOWED_ORIGINS=https://your-frontend.vercel.app
+API_BASE_URL=https://your-render-service.onrender.com
+ADMIN_EMAIL=admin@yourdomain.com
+ADMIN_PASSWORD=replace-with-a-strong-password
+PAYPAL_CLIENT_ID=...
+PAYPAL_CLIENT_SECRET=...
+PAYPAL_ENVIRONMENT=sandbox
+PAYPAL_CURRENCY=USD
+```
+
+The admin login connection error on Vercel happens when `/api/admin/login` is not backed by a running FastAPI API, or when the frontend is still pointing to localhost instead of the deployed backend.
+
+## Render Deployment
+
+- A starter Render service definition is included in [render.yaml](render.yaml).
+- Create a new Render Web Service from this repository.
+- Add the environment variables listed above.
+- After the first deploy, copy the Render service URL and use it as `API_BASE_URL` for the Vercel frontend.
 
 ## Neon Setup
 

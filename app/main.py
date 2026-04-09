@@ -3,27 +3,43 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, or_, text
+from sqlalchemy import and_, func, inspect, or_, text
 from starlette.concurrency import run_in_threadpool
 
 from app.admin_models import AdminUser
-from app.auth_service import get_admin_by_email, hash_password
+from app.auth_service import (
+    authenticate_platform_user,
+    create_user_token,
+    get_admin_by_email,
+    get_platform_user_by_email,
+    hash_password,
+    register_platform_user,
+    update_platform_user_last_login,
+    verify_user_token,
+)
 from app.database import Base, SessionLocal, engine, get_db
 from app.export_service import export_run_file
 from app.models import Business, ScrapeRun
+from app.lead_models import LeadRecord
 from app.schemas import (
     BusinessResponse,
     InsightBucket,
     InsightOverviewResponse,
     InsightRecentRun,
+    LeadRecordResponse,
+    LeadRecordUpsertRequest,
+    LeadSummaryResponse,
     PaginatedBusinessesResponse,
     PaginatedScrapeRunsResponse,
     PaginationMetaResponse,
+    SavedSearchCreateRequest,
+    SavedSearchResponse,
     ScrapeRequest,
     ScrapeRunResponse,
     ScrapeSummaryResponse,
@@ -35,6 +51,9 @@ from app.payment_schemas import (
     CreateCheckoutSessionRequest,
     CreateSubscriptionCheckoutRequest,
     CreditPurchaseRequest,
+    PlatformAuthResponse,
+    PlatformUserLoginRequest,
+    PlatformUserRegisterRequest,
     PlatformUserResponse,
     PlatformUserUpsertRequest,
     UserDashboardResponse,
@@ -62,8 +81,22 @@ from app.payment_service import (
     use_credit,
 )
 from app.admin_routes import router as admin_router
+from app.lead_service import (
+    create_saved_search,
+    delete_saved_search,
+    get_lead_map,
+    get_lead_summary,
+    list_saved_searches,
+    serialize_business_with_lead,
+    serialize_lead_record,
+    serialize_saved_search,
+    upsert_lead_record,
+)
 
 import stripe
+
+
+user_security = HTTPBearer(auto_error=False)
 
 
 def get_runtime_config() -> dict[str, str]:
@@ -145,6 +178,114 @@ def bootstrap_admin_user() -> None:
         db.close()
 
 
+def ensure_platform_user_auth_columns() -> None:
+    inspector = inspect(engine)
+    if "platform_users" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("platform_users")}
+    statements: list[str] = []
+
+    if "hashed_password" not in existing_columns:
+        statements.append("ALTER TABLE platform_users ADD COLUMN hashed_password VARCHAR(255)")
+    if "is_active" not in existing_columns:
+        statements.append("ALTER TABLE platform_users ADD COLUMN is_active BOOLEAN DEFAULT TRUE")
+    if "last_login" not in existing_columns:
+        statements.append("ALTER TABLE platform_users ADD COLUMN last_login TIMESTAMP")
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+        if "is_active" not in existing_columns:
+            connection.execute(text("UPDATE platform_users SET is_active = TRUE WHERE is_active IS NULL"))
+
+
+def get_current_platform_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(user_security),
+    db: Session = Depends(get_db),
+):
+    if not credentials:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    payload = verify_user_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = get_platform_user_by_email(db, email)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+def get_optional_platform_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(user_security),
+    db: Session = Depends(get_db),
+):
+    if not credentials:
+        return None
+
+    payload = verify_user_token(credentials.credentials)
+    if not payload:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    email = payload.get("sub")
+    if not email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token payload",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    user = get_platform_user_by_email(db, email)
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found or inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return user
+
+
+def require_current_user_email(current_user, email: str) -> None:
+    if current_user.email != email:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You can only access your own account data")
+
+
+def require_current_user_email_if_authenticated(current_user, email: str) -> None:
+    if current_user is None:
+        return
+    require_current_user_email(current_user, email)
+
+
 ALLOWED_ORIGINS = get_allowed_origins()
 ALLOW_CREDENTIALS = ALLOWED_ORIGINS != ["*"]
 
@@ -169,6 +310,7 @@ def startup():
     import traceback
     try:
         Base.metadata.create_all(bind=engine)
+        ensure_platform_user_auth_columns()
         # Test the connection
         db = next(get_db())
         db.execute(text("SELECT 1"))
@@ -215,7 +357,12 @@ def health_check():
 
 
 @app.post("/api/scrapes", response_model=ScrapeSummaryResponse)
-async def create_scrape(payload: ScrapeRequest, db: Session = Depends(get_db)):
+async def create_scrape(
+    payload: ScrapeRequest,
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, payload.email)
     data = payload.model_dump()
     user = get_platform_user(db, payload.email)
     if user is None:
@@ -295,14 +442,33 @@ def list_scrape_runs(
 @app.get("/api/businesses", response_model=list[BusinessResponse] | PaginatedBusinessesResponse)
 def list_businesses(
     db: Session = Depends(get_db),
+    current_user=Depends(get_optional_platform_user),
+    email: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
     city: Optional[str] = Query(default=None),
     country: Optional[str] = Query(default=None),
     category: Optional[str] = Query(default=None),
+    lead_status: Optional[str] = Query(default=None),
+    tag: Optional[str] = Query(default=None),
+    saved_only: bool = Query(default=False),
     limit: int = Query(default=100, ge=1, le=500),
     page: Optional[int] = Query(default=None, ge=1),
     page_size: int = Query(default=10, ge=1, le=100),
 ):
     query = db.query(Business).order_by(Business.created_at.desc())
+
+    if search:
+        pattern = f"%{search}%"
+        query = query.filter(
+            or_(
+                Business.name.ilike(pattern),
+                Business.address.ilike(pattern),
+                Business.website.ilike(pattern),
+                Business.city.ilike(pattern),
+                Business.country.ilike(pattern),
+                Business.category.ilike(pattern),
+            )
+        )
 
     if city:
         query = query.filter(Business.city.ilike(f"%{city}%"))
@@ -310,14 +476,37 @@ def list_businesses(
         query = query.filter(Business.country.ilike(f"%{country}%"))
     if category:
         query = query.filter(Business.category.ilike(f"%{category}%"))
+    if email:
+        require_current_user_email_if_authenticated(current_user, email)
+        query = query.outerjoin(
+            LeadRecord,
+            and_(LeadRecord.business_id == Business.id, LeadRecord.user_email == email),
+        )
+        if lead_status:
+            query = query.filter(LeadRecord.status == lead_status.strip().lower())
+        if tag:
+            query = query.filter(LeadRecord.tags.ilike(f"%{tag}%"))
+        if saved_only:
+            query = query.filter(LeadRecord.id.is_not(None), LeadRecord.is_archived == False)
+    elif lead_status or tag or saved_only:
+        raise HTTPException(status_code=400, detail="email is required when filtering lead pipeline data")
 
     if page is None:
-        return query.limit(limit).all()
+        items = query.limit(limit).all()
+        if not email:
+            return items
+        lead_map = get_lead_map(db, email, [item.id for item in items])
+        return [serialize_business_with_lead(item, lead_map.get(item.id)) for item in items]
 
     total = query.count()
     offset = (page - 1) * page_size
     items = query.offset(offset).limit(page_size).all()
-    return {"items": items, "pagination": build_pagination(page, page_size, total)}
+    if not email:
+        return {"items": items, "pagination": build_pagination(page, page_size, total)}
+
+    lead_map = get_lead_map(db, email, [item.id for item in items])
+    serialized_items = [serialize_business_with_lead(item, lead_map.get(item.id)) for item in items]
+    return {"items": serialized_items, "pagination": build_pagination(page, page_size, total)}
 
 
 @app.get("/api/businesses/{business_id}")
@@ -326,6 +515,80 @@ def get_business(business_id: int, db: Session = Depends(get_db)):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
+
+
+@app.post("/api/leads", response_model=LeadRecordResponse)
+def save_lead_record(
+    payload: LeadRecordUpsertRequest,
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, payload.email)
+    try:
+        record = upsert_lead_record(
+            db,
+            payload.email,
+            payload.business_id,
+            payload.status,
+            payload.tags,
+            payload.notes,
+            payload.is_archived,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return serialize_lead_record(record)
+
+
+@app.get("/api/leads/summary/{email}", response_model=LeadSummaryResponse)
+def get_lead_pipeline_summary(email: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
+    require_current_user_email_if_authenticated(current_user, email)
+    return get_lead_summary(db, email)
+
+
+@app.get("/api/saved-searches/{email}", response_model=list[SavedSearchResponse])
+def get_user_saved_searches(email: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
+    require_current_user_email_if_authenticated(current_user, email)
+    searches = list_saved_searches(db, email)
+    return [serialize_saved_search(saved_search) for saved_search in searches]
+
+
+@app.post("/api/saved-searches", response_model=SavedSearchResponse)
+def create_user_saved_search(
+    payload: SavedSearchCreateRequest,
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, payload.email)
+    saved_search = create_saved_search(
+        db,
+        payload.email,
+        payload.name,
+        payload.search_query,
+        payload.city,
+        payload.country,
+        payload.category,
+        payload.lead_status,
+        payload.tag,
+        payload.saved_only,
+        payload.alert_enabled,
+    )
+    return serialize_saved_search(saved_search)
+
+
+@app.delete("/api/saved-searches/{search_id}")
+def remove_user_saved_search(
+    search_id: int,
+    email: str = Query(...),
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, email)
+    try:
+        delete_saved_search(db, email, search_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted", "id": search_id}
 
 
 @app.get("/api/scrapes/{run_id}/exports/{file_format}")
@@ -430,23 +693,83 @@ def insights_overview(db: Session = Depends(get_db)):
     )
 
 
+@app.post("/api/auth/register", response_model=PlatformAuthResponse)
+def register_user_account(payload: PlatformUserRegisterRequest, db: Session = Depends(get_db)):
+    if payload.password != payload.confirm_password:
+        raise HTTPException(status_code=400, detail="Password confirmation does not match")
+
+    try:
+        user = register_platform_user(
+            db,
+            email=payload.email,
+            password=payload.password,
+            full_name=payload.full_name,
+            company_name=payload.company_name,
+            phone=payload.phone,
+            country=payload.country,
+            preferred_payment_provider=payload.preferred_payment_provider,
+        )
+        update_platform_user_last_login(db, user)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    access_token = create_user_token({"sub": user.email})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
+    }
+
+
+@app.post("/api/auth/login", response_model=PlatformAuthResponse)
+def login_user_account(payload: PlatformUserLoginRequest, db: Session = Depends(get_db)):
+    user = authenticate_platform_user(db, payload.email, payload.password)
+    if not user:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    update_platform_user_last_login(db, user)
+    access_token = create_user_token({"sub": user.email})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": user,
+    }
+
+
+@app.get("/api/auth/me", response_model=PlatformUserResponse)
+def get_authenticated_user(current_user=Depends(get_current_platform_user)):
+    return current_user
+
+
 @app.post("/api/users/onboard", response_model=PlatformUserResponse)
-def onboard_user(payload: PlatformUserUpsertRequest, db: Session = Depends(get_db)):
+def onboard_user(
+    payload: PlatformUserUpsertRequest,
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, payload.email)
     return upsert_platform_user(db, payload)
 
 
 @app.put("/api/users/profile", response_model=PlatformUserResponse)
-def update_user_profile(payload: PlatformUserUpsertRequest, db: Session = Depends(get_db)):
+def update_user_profile(
+    payload: PlatformUserUpsertRequest,
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, payload.email)
     return upsert_platform_user(db, payload)
 
 
 @app.get("/api/users/access/{email}", response_model=AccessStatusResponse)
-def get_user_access(email: str, db: Session = Depends(get_db)):
+def get_user_access(email: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
+    require_current_user_email_if_authenticated(current_user, email)
     return get_user_access_state(db, email)
 
 
 @app.get("/api/users/dashboard/{email}", response_model=UserDashboardResponse)
-def get_user_dashboard_view(email: str, db: Session = Depends(get_db)):
+def get_user_dashboard_view(email: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
+    require_current_user_email_if_authenticated(current_user, email)
     try:
         return get_user_dashboard(db, email)
     except ValueError as exc:
@@ -454,7 +777,12 @@ def get_user_dashboard_view(email: str, db: Session = Depends(get_db)):
 
 
 @app.post("/api/users/subscription/cancel", response_model=UserSubscriptionSnapshotResponse)
-def cancel_user_subscription(request: UserSubscriptionCancelRequest, db: Session = Depends(get_db)):
+def cancel_user_subscription(
+    request: UserSubscriptionCancelRequest,
+    current_user=Depends(get_optional_platform_user),
+    db: Session = Depends(get_db),
+):
+    require_current_user_email_if_authenticated(current_user, request.email)
     try:
         subscription = cancel_subscription_for_user(db, request.email)
     except Exception as exc:
@@ -508,9 +836,11 @@ def get_payment_config():
 @app.post("/api/payment/create-checkout-session")
 def create_payment_session(
     request: CreateCheckoutSessionRequest,
+    current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db)
 ):
     """Create a Stripe checkout session for purchasing credits."""
+    require_current_user_email_if_authenticated(current_user, request.email)
     try:
         result = create_checkout_session(db, request)
         return result
@@ -523,9 +853,11 @@ def create_payment_session(
 @app.post("/api/subscription/create-checkout-session")
 def create_subscription_session(
     request: CreateSubscriptionCheckoutRequest,
+    current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db)
 ):
     """Create a subscription checkout session."""
+    require_current_user_email_if_authenticated(current_user, request.email)
     try:
         result = create_subscription_checkout_session(db, request)
         return result
@@ -538,8 +870,10 @@ def create_subscription_session(
 @app.post("/api/paypal/orders")
 def create_paypal_order(
     request: CreateSubscriptionCheckoutRequest,
+    current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db),
 ):
+    require_current_user_email_if_authenticated(current_user, request.email)
     try:
         return create_paypal_subscription_order(db, request)
     except ValueError as e:
@@ -549,7 +883,7 @@ def create_paypal_order(
 
 
 @app.post("/api/paypal/orders/{order_id}/capture")
-def capture_paypal_order(order_id: str, db: Session = Depends(get_db)):
+def capture_paypal_order(order_id: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
     try:
         return capture_paypal_subscription_order(db, order_id)
     except ValueError as e:
@@ -582,15 +916,17 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
 
 
 @app.get("/api/user/credits/{email}")
-def get_credits(email: str, db: Session = Depends(get_db)):
+def get_credits(email: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
     """Get available credits for a user."""
+    require_current_user_email_if_authenticated(current_user, email)
     credits = get_user_credits(db, email)
     return {"email": email, "available_credits": credits}
 
 
 @app.post("/api/user/credits/use")
-def consume_credit(email: str, db: Session = Depends(get_db)):
+def consume_credit(email: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
     """Use one scrape credit."""
+    require_current_user_email_if_authenticated(current_user, email)
     success = use_credit(db, email)
     if success:
         remaining = get_user_credits(db, email)

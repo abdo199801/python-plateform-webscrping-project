@@ -29,10 +29,12 @@ class PlatformUser(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String(255), unique=True, nullable=False, index=True)
+    hashed_password = Column(String(255), nullable=True)
     full_name = Column(String(255), nullable=False)
     company_name = Column(String(255), nullable=False)
     phone = Column(String(100), nullable=False)
     country = Column(String(100), nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
     preferred_payment_provider = Column(
         SQLEnum(PaymentProvider),
         nullable=False,
@@ -42,6 +44,7 @@ class PlatformUser(Base):
     trial_ends_at = Column(DateTime(timezone=True), nullable=False)
     total_scrapes = Column(Integer, nullable=False, default=0)
     last_scrape_at = Column(DateTime(timezone=True), nullable=True)
+    last_login = Column(DateTime(timezone=True), nullable=True)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now(), nullable=True)

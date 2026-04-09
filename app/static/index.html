@@ -69,11 +69,39 @@
       </aside>
     </section>
 
+    <section id="auth" class="panel auth-panel">
+      <div class="panel-header">
+        <div>
+          <h2>Account Access</h2>
+          <p class="section-subtitle">Create a customer account before hosting so dashboards, leads, and billing stay private.</p>
+        </div>
+      </div>
+      <div class="auth-layout">
+        <form id="loginForm" class="auth-card compact-form">
+          <h3>Sign In</h3>
+          <label>
+            Email
+            <input name="email" type="email" placeholder="jane@company.com" required>
+          </label>
+          <label>
+            Password
+            <input name="password" type="password" placeholder="Enter your password" required>
+          </label>
+          <button type="submit" id="loginBtn">Log In</button>
+        </form>
+        <div class="auth-card auth-session-card">
+          <h3>Session</h3>
+          <p id="authStateMessage" class="section-subtitle">No active customer session.</p>
+          <button type="button" id="logoutBtn" class="secondary" disabled>Log Out</button>
+        </div>
+      </div>
+    </section>
+
     <section id="profile" class="panel">
       <div class="panel-header">
         <div>
           <h2>Company Profile</h2>
-          <p class="section-subtitle">Users must submit their business details before scraping starts.</p>
+          <p class="section-subtitle">Create an account with your business details, then update this profile after you log in.</p>
         </div>
       </div>
       <form id="profile-form" class="form-grid">
@@ -104,9 +132,17 @@
             <option value="paypal">PayPal</option>
           </select>
         </label>
-        <button type="submit" id="saveProfileBtn">Save Profile & Start Trial</button>
+        <label>
+          Password *
+          <input name="password" type="password" placeholder="Create a strong password" required>
+        </label>
+        <label>
+          Confirm Password *
+          <input name="confirm_password" type="password" placeholder="Repeat your password" required>
+        </label>
+        <button type="submit" id="saveProfileBtn">Create Account & Start Trial</button>
       </form>
-      <p id="profileStatus" class="status">Complete the profile once to unlock your 15-day free trial.</p>
+      <p id="profileStatus" class="status">Create your account once to unlock the 15-day free trial and secure dashboard access.</p>
     </section>
 
     <section id="dashboard" class="panel dashboard-panel">
@@ -212,6 +248,67 @@
       </form>
       <p id="status" class="status">Ready. Your current trial window shows <span id="statusCredits">0</span> days left.</p>
       <p class="status helper-status">Enable headless mode to keep the browser hidden while Selenium scrapes Google Maps.</p>
+    </section>
+
+    <section id="leadDesk" class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>Lead Desk</h2>
+          <p class="section-subtitle">Filter saved businesses, move leads through the pipeline, and store reusable search views.</p>
+        </div>
+        <button id="refresh-leads" type="button" class="secondary">Refresh lead desk</button>
+      </div>
+      <div id="leadSummary" class="insight-grid lead-summary-grid"></div>
+      <form id="leadFilterForm" class="lead-filter-grid">
+        <label>
+          Search
+          <input name="search" placeholder="Business, city, website...">
+        </label>
+        <label>
+          City
+          <input name="city" placeholder="Casablanca">
+        </label>
+        <label>
+          Country
+          <input name="country" placeholder="Morocco">
+        </label>
+        <label>
+          Category
+          <input name="category" placeholder="Hotels">
+        </label>
+        <label>
+          Lead Status
+          <select name="lead_status">
+            <option value="">All statuses</option>
+            <option value="new">New</option>
+            <option value="contacted">Contacted</option>
+            <option value="qualified">Qualified</option>
+            <option value="proposal">Proposal</option>
+            <option value="won">Won</option>
+            <option value="lost">Lost</option>
+          </select>
+        </label>
+        <label>
+          Tag
+          <input name="tag" placeholder="priority, follow-up">
+        </label>
+        <label class="checkbox">
+          <input name="saved_only" type="checkbox">
+          Saved leads only
+        </label>
+        <div class="lead-filter-actions">
+          <button type="submit">Apply Filters</button>
+          <button type="button" id="clearLeadFilters" class="secondary">Clear</button>
+        </div>
+      </form>
+      <div class="saved-search-toolbar">
+        <label>
+          Saved Search Name
+          <input id="savedSearchName" placeholder="Hotels in Rabat">
+        </label>
+        <button id="saveCurrentSearch" type="button">Save Current Search</button>
+      </div>
+      <div id="savedSearches" class="signal-list"></div>
     </section>
 
     <section id="pricing" class="panel">

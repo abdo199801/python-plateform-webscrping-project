@@ -41,6 +41,12 @@ class BusinessResponse(BaseModel):
     email: Optional[str] = None
     social_media: Optional[str] = None
     created_at: datetime
+    lead_id: Optional[int] = None
+    lead_status: Optional[str] = None
+    lead_tags: List[str] = Field(default_factory=list)
+    lead_notes: str = ""
+    lead_updated_at: Optional[datetime] = None
+    lead_archived: bool = False
 
 
 class ScrapeRunResponse(BaseModel):
@@ -105,3 +111,59 @@ class InsightOverviewResponse(BaseModel):
     top_categories: List[InsightBucket]
     top_cities: List[InsightBucket]
     recent_runs: List[InsightRecentRun]
+
+
+class LeadRecordUpsertRequest(BaseModel):
+    email: EmailStr
+    business_id: int
+    status: str = Field(default="new", min_length=1, max_length=50)
+    tags: List[str] = Field(default_factory=list)
+    notes: str = Field(default="", max_length=2000)
+    is_archived: bool = False
+
+
+class LeadRecordResponse(BaseModel):
+    id: int
+    user_email: EmailStr
+    business_id: int
+    status: str
+    tags: List[str] = Field(default_factory=list)
+    notes: str = ""
+    is_archived: bool
+    created_at: datetime
+    updated_at: datetime
+
+
+class LeadSummaryResponse(BaseModel):
+    total: int
+    active: int
+    archived: int
+    counts: dict[str, int]
+
+
+class SavedSearchCreateRequest(BaseModel):
+    email: EmailStr
+    name: str = Field(min_length=1, max_length=255)
+    search_query: Optional[str] = Field(default=None, max_length=255)
+    city: Optional[str] = Field(default=None, max_length=100)
+    country: Optional[str] = Field(default=None, max_length=100)
+    category: Optional[str] = Field(default=None, max_length=100)
+    lead_status: Optional[str] = Field(default=None, max_length=50)
+    tag: Optional[str] = Field(default=None, max_length=100)
+    saved_only: bool = False
+    alert_enabled: bool = True
+
+
+class SavedSearchResponse(BaseModel):
+    id: int
+    user_email: EmailStr
+    name: str
+    search_query: Optional[str] = None
+    city: Optional[str] = None
+    country: Optional[str] = None
+    category: Optional[str] = None
+    lead_status: Optional[str] = None
+    tag: Optional[str] = None
+    saved_only: bool
+    alert_enabled: bool
+    created_at: datetime

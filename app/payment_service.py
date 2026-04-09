@@ -2,7 +2,7 @@ import os
 import stripe
 import base64
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any, List
 from urllib import error, parse, request as urlrequest
 from sqlalchemy.orm import Session
@@ -93,6 +93,18 @@ CREDIT_PACKAGES = [
     {"credits": 50, "price": 90, "bonus": 15},
     {"credits": 100, "price": 150, "bonus": 30},
 ]
+
+
+def utc_now() -> datetime:
+    return datetime.utcnow()
+
+
+def normalize_utc_naive(value: Optional[datetime]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def get_frontend_url() -> str:
@@ -186,7 +198,7 @@ def get_platform_user(db: Session, email: str) -> Optional[PlatformUser]:
 
 def upsert_platform_user(db: Session, payload: PlatformUserUpsertRequest) -> PlatformUser:
     user = get_platform_user(db, payload.email)
-    now = datetime.utcnow()
+    now = utc_now()
 
     if user is None:
         user = PlatformUser(
@@ -218,7 +230,7 @@ def mark_user_scrape(db: Session, email: str) -> Optional[PlatformUser]:
         return None
 
     user.total_scrapes += 1
-    user.last_scrape_at = datetime.utcnow()
+    user.last_scrape_at = utc_now()
     db.commit()
     db.refresh(user)
     return user
@@ -229,7 +241,8 @@ def has_eligible_subscription(subscription: Optional[Subscription]) -> bool:
         return False
     if subscription.tier not in SCRAPE_ALLOWED_TIERS:
         return False
-    if subscription.current_period_end and subscription.current_period_end < datetime.utcnow():
+    current_period_end = normalize_utc_naive(subscription.current_period_end)
+    if current_period_end and current_period_end < utc_now():
         return False
     return True
 
@@ -249,9 +262,10 @@ def get_user_access_state(db: Session, email: str) -> Dict[str, Any]:
             "preferred_payment_provider": None,
         }
 
-    now = datetime.utcnow()
-    trial_active = user.trial_ends_at >= now
-    trial_days_left = max(0, (user.trial_ends_at.date() - now.date()).days)
+    now = utc_now()
+    trial_ends_at = normalize_utc_naive(user.trial_ends_at) or now
+    trial_active = trial_ends_at >= now
+    trial_days_left = max(0, (trial_ends_at.date() - now.date()).days)
     subscription = get_user_subscription(db, email)
     subscription_active = has_eligible_subscription(subscription)
 
@@ -543,14 +557,14 @@ def capture_paypal_subscription_order(db: Session, order_id: str) -> Dict[str, A
 
     subscription.is_active = True
     subscription.cancel_at_period_end = False
-    subscription.current_period_start = datetime.utcnow()
-    subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
+    subscription.current_period_start = utc_now()
+    subscription.current_period_end = utc_now() + timedelta(days=30)
     subscription.stripe_customer_id = order.get("payer", {}).get("payer_id")
     subscription.stripe_subscription_id = f"paypal-capture-{capture_id or order_id}"
 
     if payment is not None:
         payment.status = PaymentStatus.COMPLETED
-        payment.completed_at = datetime.utcnow()
+        payment.completed_at = utc_now()
         payment.stripe_payment_intent_id = capture_id
         payment.payment_metadata = {
             **(payment.payment_metadata or {}),
@@ -580,7 +594,7 @@ def handle_webhook_event(event_type: str, data: Dict[str, Any]) -> Optional[Paym
                 if payment:
                     payment.status = PaymentStatus.COMPLETED
                     payment.stripe_payment_intent_id = session.get("payment_intent")
-                    payment.completed_at = datetime.utcnow()
+                    payment.completed_at = utc_now()
                     
                     # Grant scrape credits
                     amount = session["amount_total"] / 100  # Convert from cents
@@ -589,7 +603,7 @@ def handle_webhook_event(event_type: str, data: Dict[str, Any]) -> Optional[Paym
                     scrape_credit = ScrapeCredit(
                         payment_id=payment.id,
                         credits=credits,
-                        expires_at=datetime.utcnow() + timedelta(days=365)
+                        expires_at=utc_now() + timedelta(days=365)
                     )
                     db.add(scrape_credit)
                     db.commit()
@@ -599,8 +613,8 @@ def handle_webhook_event(event_type: str, data: Dict[str, Any]) -> Optional[Paym
                 subscription = db.query(Subscription).filter(Subscription.id == int(subscription_id)).first()
                 if subscription:
                     subscription.is_active = True
-                    subscription.current_period_start = datetime.utcnow()
-                    subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
+                    subscription.current_period_start = utc_now()
+                    subscription.current_period_end = utc_now() + timedelta(days=30)
                     subscription.stripe_customer_id = session.get("customer")
                     subscription.stripe_subscription_id = session.get("subscription")
                     db.commit()
@@ -630,7 +644,7 @@ def handle_webhook_event(event_type: str, data: Dict[str, Any]) -> Optional[Paym
             ).first()
             if subscription:
                 subscription.is_active = False
-                subscription.current_period_end = datetime.utcnow()
+                subscription.current_period_end = utc_now()
                 db.commit()
 
     except Exception as e:
@@ -664,7 +678,7 @@ def get_user_credits(db: Session, email: str) -> int:
     credits = db.query(ScrapeCredit).filter(
         ScrapeCredit.payment.has(Payment.user_email == email),
         ScrapeCredit.is_active == True,
-        (ScrapeCredit.expires_at.is_(None) | ScrapeCredit.expires_at > datetime.utcnow())
+        (ScrapeCredit.expires_at.is_(None) | ScrapeCredit.expires_at > utc_now())
     ).all()
     
     total_available = sum(credit.credits - credit.used for credit in credits)
@@ -677,7 +691,7 @@ def use_credit(db: Session, email: str) -> bool:
         ScrapeCredit.payment.has(Payment.user_email == email),
         ScrapeCredit.is_active == True,
         ScrapeCredit.used < ScrapeCredit.credits,
-        (ScrapeCredit.expires_at.is_(None) | ScrapeCredit.expires_at > datetime.utcnow())
+        (ScrapeCredit.expires_at.is_(None) | ScrapeCredit.expires_at > utc_now())
     ).order_by(ScrapeCredit.created_at.desc()).first()
     
     if credits:
@@ -735,8 +749,8 @@ def activate_subscription_for_user(
 
     subscription.tier = tier
     subscription.is_active = True
-    subscription.current_period_start = datetime.utcnow()
-    subscription.current_period_end = datetime.utcnow() + timedelta(days=max(1, duration_days))
+    subscription.current_period_start = utc_now()
+    subscription.current_period_end = utc_now() + timedelta(days=max(1, duration_days))
     subscription.stripe_subscription_id = subscription.stripe_subscription_id or f"manual-admin-{email}"
     db.commit()
     db.refresh(subscription)
@@ -749,7 +763,7 @@ def deactivate_subscription_for_user(db: Session, email: str) -> Optional[Subscr
         return None
 
     subscription.is_active = False
-    subscription.current_period_end = datetime.utcnow()
+    subscription.current_period_end = utc_now()
     db.commit()
     db.refresh(subscription)
     return subscription
@@ -807,7 +821,7 @@ def cancel_subscription_for_user(db: Session, email: str) -> Optional[Subscripti
     if subscription is None:
         return None
 
-    now = datetime.utcnow()
+    now = utc_now()
     stripe_subscription_id = (subscription.stripe_subscription_id or "").strip()
     managed_by_stripe = (
         stripe_subscription_id
@@ -822,7 +836,8 @@ def cancel_subscription_for_user(db: Session, email: str) -> Optional[Subscripti
         stripe.Subscription.modify(stripe_subscription_id, cancel_at_period_end=True)
 
     subscription.cancel_at_period_end = True
-    if not subscription.current_period_end or subscription.current_period_end <= now:
+    current_period_end = normalize_utc_naive(subscription.current_period_end)
+    if not current_period_end or current_period_end <= now:
         subscription.is_active = False
         subscription.current_period_end = now
 

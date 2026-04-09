@@ -1,7 +1,14 @@
 const statusEl = document.getElementById("status");
 const profileStatusEl = document.getElementById("profileStatus");
+const loginFormEl = document.getElementById("loginForm");
+const authStateMessageEl = document.getElementById("authStateMessage");
+const logoutBtnEl = document.getElementById("logoutBtn");
 const runsEl = document.getElementById("runs");
 const businessesEl = document.getElementById("businesses");
+const leadSummaryEl = document.getElementById("leadSummary");
+const leadFilterFormEl = document.getElementById("leadFilterForm");
+const savedSearchNameEl = document.getElementById("savedSearchName");
+const savedSearchesEl = document.getElementById("savedSearches");
 const runsPaginationEl = document.getElementById("runsPagination");
 const businessesPaginationEl = document.getElementById("businessesPagination");
 const businessExportsEl = document.getElementById("businessExports");
@@ -44,9 +51,17 @@ function resolveApiUrl(input) {
   return `${apiBaseUrl}${input}`;
 }
 
-window.fetch = (input, init) => nativeFetch(resolveApiUrl(input), init);
+window.fetch = (input, init = {}) => {
+  const headers = new Headers(init.headers || {});
+  if (authToken && !headers.has("Authorization")) {
+    headers.set("Authorization", `Bearer ${authToken}`);
+  }
+
+  return nativeFetch(resolveApiUrl(input), { ...init, headers });
+};
 
 let userEmail = localStorage.getItem("userEmail") || "";
+let authToken = localStorage.getItem("authToken") || "";
 let stripe = null;
 let paypalSdkReady = false;
 let paymentConfig = {
@@ -61,9 +76,22 @@ let paymentConfig = {
 };
 let accessState = null;
 const runListState = { page: 1, pageSize: 6 };
-const businessListState = { page: 1, pageSize: 10 };
+const businessListState = {
+  page: 1,
+  pageSize: 10,
+  search: "",
+  city: "",
+  country: "",
+  category: "",
+  leadStatus: "",
+  tag: "",
+  savedOnly: false,
+};
 let latestRunId = null;
 let dashboardState = null;
+let savedSearchesState = [];
+
+const LEAD_STATUS_OPTIONS = ["new", "contacted", "qualified", "proposal", "won", "lost"];
 
 function buildPayPalSdkUrl() {
   const params = new URLSearchParams({
@@ -219,6 +247,11 @@ function setProfileStatus(message, isError = false) {
   profileStatusEl.style.color = isError ? "#a02b2b" : "";
 }
 
+function setAuthStateMessage(message, isError = false) {
+  authStateMessageEl.textContent = message;
+  authStateMessageEl.style.color = isError ? "#a02b2b" : "";
+}
+
 function escapeHtml(value) {
   if (value === null || value === undefined) {
     return "";
@@ -238,6 +271,85 @@ function formatNumber(value) {
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "-";
+}
+
+function formatStatusLabel(value) {
+  if (!value) {
+    return "Unassigned";
+  }
+
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+function buildBusinessQueryString() {
+  const params = new URLSearchParams({
+    page: String(businessListState.page),
+    page_size: String(businessListState.pageSize),
+  });
+
+  if (userEmail) {
+    params.set("email", userEmail);
+  }
+  if (businessListState.search) {
+    params.set("search", businessListState.search);
+  }
+  if (businessListState.city) {
+    params.set("city", businessListState.city);
+  }
+  if (businessListState.country) {
+    params.set("country", businessListState.country);
+  }
+  if (businessListState.category) {
+    params.set("category", businessListState.category);
+  }
+  if (businessListState.leadStatus) {
+    params.set("lead_status", businessListState.leadStatus);
+  }
+  if (businessListState.tag) {
+    params.set("tag", businessListState.tag);
+  }
+  if (businessListState.savedOnly) {
+    params.set("saved_only", "true");
+  }
+
+  return params.toString();
+}
+
+function syncLeadFilterForm() {
+  if (!leadFilterFormEl) {
+    return;
+  }
+
+  leadFilterFormEl.elements.search.value = businessListState.search;
+  leadFilterFormEl.elements.city.value = businessListState.city;
+  leadFilterFormEl.elements.country.value = businessListState.country;
+  leadFilterFormEl.elements.category.value = businessListState.category;
+  leadFilterFormEl.elements.lead_status.value = businessListState.leadStatus;
+  leadFilterFormEl.elements.tag.value = businessListState.tag;
+  leadFilterFormEl.elements.saved_only.checked = businessListState.savedOnly;
+}
+
+function getLeadFilterPayload() {
+  const data = new FormData(leadFilterFormEl);
+  return {
+    search: (data.get("search") || "").toString().trim(),
+    city: (data.get("city") || "").toString().trim(),
+    country: (data.get("country") || "").toString().trim(),
+    category: (data.get("category") || "").toString().trim(),
+    leadStatus: (data.get("lead_status") || "").toString().trim(),
+    tag: (data.get("tag") || "").toString().trim(),
+    savedOnly: data.get("saved_only") === "on",
+  };
+}
+
+function updateLeadFilterState(nextState = {}) {
+  businessListState.search = nextState.search || "";
+  businessListState.city = nextState.city || "";
+  businessListState.country = nextState.country || "";
+  businessListState.category = nextState.category || "";
+  businessListState.leadStatus = nextState.leadStatus || "";
+  businessListState.tag = nextState.tag || "";
+  businessListState.savedOnly = Boolean(nextState.savedOnly);
 }
 
 function formatRelativeDayLabel(value) {
@@ -263,11 +375,17 @@ function setPaymentBanner(message, tone) {
 
 function syncEmailFields(email) {
   userEmail = email.trim();
-  localStorage.setItem("userEmail", userEmail);
+  if (userEmail) {
+    localStorage.setItem("userEmail", userEmail);
+  } else {
+    localStorage.removeItem("userEmail");
+  }
   const scrapeEmailField = formEl.querySelector('input[name="email"]');
   const profileEmailField = profileFormEl.querySelector('input[name="email"]');
+  const loginEmailField = loginFormEl.querySelector('input[name="email"]');
   scrapeEmailField.value = userEmail;
   profileEmailField.value = userEmail;
+  loginEmailField.value = userEmail;
 }
 
 function getProfilePayload() {
@@ -279,11 +397,93 @@ function getProfilePayload() {
     phone: (data.get("phone") || "").toString().trim(),
     country: (data.get("country") || "").toString().trim(),
     preferred_payment_provider: data.get("preferred_payment_provider") || "card",
+    password: (data.get("password") || "").toString(),
+    confirm_password: (data.get("confirm_password") || "").toString(),
   };
 }
 
 function validateProfilePayload(payload) {
   return payload.full_name && payload.company_name && payload.email && payload.phone;
+}
+
+function updateAuthUi(user = null) {
+  const passwordField = profileFormEl.querySelector('input[name="password"]');
+  const confirmPasswordField = profileFormEl.querySelector('input[name="confirm_password"]');
+  const passwordLabel = passwordField.closest("label");
+  const confirmPasswordLabel = confirmPasswordField.closest("label");
+  const profileEmailField = profileFormEl.querySelector('input[name="email"]');
+
+  const authenticated = Boolean(user && authToken);
+  loginFormEl.hidden = authenticated;
+  logoutBtnEl.disabled = !authenticated;
+  passwordLabel.hidden = authenticated;
+  confirmPasswordLabel.hidden = authenticated;
+  passwordField.required = !authenticated;
+  confirmPasswordField.required = !authenticated;
+  profileEmailField.readOnly = authenticated;
+  profileEmailField.classList.toggle("readonly-field", authenticated);
+  saveProfileButtonEl.textContent = authenticated ? "Save Profile" : "Create Account & Start Trial";
+
+  if (authenticated) {
+    setAuthStateMessage(`Signed in as ${user.email}. Your private dashboard and lead data are now scoped to this account.`);
+  } else {
+    setAuthStateMessage("No active customer session.");
+  }
+}
+
+function setAuthSession(token, user) {
+  authToken = token;
+  localStorage.setItem("authToken", token);
+  syncEmailFields(user.email);
+  populateProfileForm(user);
+  updateAuthUi(user);
+}
+
+function clearAuthSession() {
+  authToken = "";
+  accessState = null;
+  dashboardState = null;
+  localStorage.removeItem("authToken");
+  syncEmailFields("");
+  updateAccessDisplay();
+  updateAuthUi(null);
+  renderDashboardEmpty("Sign in to unlock your private dashboard and self-service subscription controls.");
+  renderLeadSummary({ total: 0, active: 0, archived: 0, counts: {} });
+  renderSavedSearches([]);
+}
+
+async function restoreSession() {
+  if (!authToken) {
+    clearAuthSession();
+    return null;
+  }
+
+  const response = await fetch("/api/auth/me");
+  if (!response.ok) {
+    clearAuthSession();
+    throw new Error("Your session expired. Please log in again.");
+  }
+
+  const user = await response.json();
+  syncEmailFields(user.email);
+  populateProfileForm(user);
+  updateAuthUi(user);
+  return user;
+}
+
+async function loginUserAccount(email, password) {
+  const response = await fetch("/api/auth/login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password }),
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.detail || "Login failed");
+  }
+
+  setAuthSession(data.access_token, data.user);
+  return data.user;
 }
 
 function updateAccessDisplay() {
@@ -522,13 +722,35 @@ function renderBusinesses(businesses, pagination) {
     .map(
       (business) => `
         <tr>
-          <td>${escapeHtml(business.name)}</td>
+          <td>
+            <strong>${escapeHtml(business.name)}</strong>
+            <div class="table-submeta">${escapeHtml(business.address || business.city || "")}</div>
+          </td>
           <td>${escapeHtml(business.category || "")}</td>
           <td>${escapeHtml(business.city || "")}</td>
           <td>${escapeHtml(business.country || "")}</td>
-          <td>${escapeHtml(business.phone || "")}</td>
-          <td>${business.website ? `<a href="${escapeHtml(business.website)}" target="_blank" rel="noreferrer">Open</a>` : ""}</td>
+          <td>
+            <div>${escapeHtml(business.phone || "")}</div>
+            <div class="table-submeta">${escapeHtml(business.email || "")}</div>
+          </td>
+          <td>${business.website ? `<a class="table-link" href="${escapeHtml(business.website)}" target="_blank" rel="noreferrer">Open</a>` : ""}</td>
           <td>${business.rating || 0}</td>
+          <td class="lead-cell">
+            ${userEmail ? `
+              <div class="lead-controls" data-business-id="${business.id}">
+                <select class="lead-status-select">
+                  ${LEAD_STATUS_OPTIONS.map((status) => `<option value="${status}" ${business.lead_status === status ? "selected" : ""}>${formatStatusLabel(status)}</option>`).join("")}
+                </select>
+                <input class="lead-tags-input" placeholder="priority, follow-up" value="${escapeHtml((business.lead_tags || []).join(", "))}">
+                <textarea class="lead-notes-input" rows="2" placeholder="Notes about outreach, pricing, fit...">${escapeHtml(business.lead_notes || "")}</textarea>
+                <label class="checkbox checkbox-inline">
+                  <input class="lead-archive-input" type="checkbox" ${business.lead_archived ? "checked" : ""}>
+                  Archive
+                </label>
+                <button type="button" class="secondary lead-save-button" data-business-id="${business.id}">Save</button>
+              </div>
+            ` : `<span class="table-submeta">Save your profile to manage lead pipeline data.</span>`}
+          </td>
         </tr>
       `
     )
@@ -542,18 +764,173 @@ function renderBusinesses(businesses, pagination) {
           <th>Category</th>
           <th>City</th>
           <th>Country</th>
-          <th>Phone</th>
+          <th>Contact</th>
           <th>Website</th>
           <th>Rating</th>
+          <th>Lead Pipeline</th>
         </tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
   `;
 
+  attachLeadRowActions();
+
   renderPagination(businessesPaginationEl, pagination, async (nextPage) => {
     businessListState.page = nextPage;
     await loadBusinesses();
+  });
+}
+
+function renderLeadSummary(summary) {
+  if (!userEmail) {
+    leadSummaryEl.innerHTML = `
+      <article class="insight-card lead-empty-card">
+        <span>Lead Desk Locked</span>
+        <strong>Save Profile</strong>
+        <small>Your email links saved businesses to a reusable pipeline.</small>
+      </article>
+    `;
+    return;
+  }
+
+  const cards = [
+    { label: "Tracked Leads", value: formatNumber(summary.total), hint: "saved pipeline records" },
+    { label: "Active", value: formatNumber(summary.active), hint: "not archived" },
+    { label: "Qualified", value: formatNumber(summary.counts.qualified || 0), hint: "ready for offers" },
+    { label: "Won", value: formatNumber(summary.counts.won || 0), hint: "converted prospects" },
+  ];
+
+  leadSummaryEl.innerHTML = cards.map((card) => `
+    <article class="insight-card">
+      <span>${escapeHtml(card.label)}</span>
+      <strong>${escapeHtml(card.value)}</strong>
+      <small>${escapeHtml(card.hint)}</small>
+    </article>
+  `).join("");
+}
+
+function describeSavedSearch(savedSearch) {
+  const parts = [];
+  if (savedSearch.search_query) parts.push(`Search: ${savedSearch.search_query}`);
+  if (savedSearch.city) parts.push(`City: ${savedSearch.city}`);
+  if (savedSearch.country) parts.push(`Country: ${savedSearch.country}`);
+  if (savedSearch.category) parts.push(`Category: ${savedSearch.category}`);
+  if (savedSearch.lead_status) parts.push(`Status: ${formatStatusLabel(savedSearch.lead_status)}`);
+  if (savedSearch.tag) parts.push(`Tag: ${savedSearch.tag}`);
+  if (savedSearch.saved_only) parts.push("Saved only");
+  return parts.length ? parts.join(" • ") : "No filters stored";
+}
+
+function renderSavedSearches(searches) {
+  savedSearchesState = searches;
+
+  if (!userEmail) {
+    savedSearchesEl.innerHTML = `<p class="signal-empty">Save your profile to store reusable search views.</p>`;
+    return;
+  }
+
+  if (!searches.length) {
+    savedSearchesEl.innerHTML = `<p class="signal-empty">No saved searches yet. Filter businesses, then save the current view.</p>`;
+    return;
+  }
+
+  savedSearchesEl.innerHTML = searches.map((savedSearch) => `
+    <div class="signal-row signal-row-stack saved-search-row">
+      <div>
+        <strong>${escapeHtml(savedSearch.name)}</strong>
+        <span>${escapeHtml(describeSavedSearch(savedSearch))}</span>
+      </div>
+      <div class="saved-search-actions">
+        <button type="button" class="secondary apply-saved-search" data-search-id="${savedSearch.id}">Apply</button>
+        <button type="button" class="secondary delete-saved-search" data-search-id="${savedSearch.id}">Delete</button>
+      </div>
+    </div>
+  `).join("");
+
+  savedSearchesEl.querySelectorAll(".apply-saved-search").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const searchId = Number(button.dataset.searchId);
+      const savedSearch = savedSearchesState.find((item) => item.id === searchId);
+      if (!savedSearch) {
+        return;
+      }
+
+      updateLeadFilterState({
+        search: savedSearch.search_query || "",
+        city: savedSearch.city || "",
+        country: savedSearch.country || "",
+        category: savedSearch.category || "",
+        leadStatus: savedSearch.lead_status || "",
+        tag: savedSearch.tag || "",
+        savedOnly: Boolean(savedSearch.saved_only),
+      });
+      businessListState.page = 1;
+      syncLeadFilterForm();
+      await loadBusinesses();
+      setStatus(`Applied saved search: ${savedSearch.name}.`);
+    });
+  });
+
+  savedSearchesEl.querySelectorAll(".delete-saved-search").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const searchId = Number(button.dataset.searchId);
+      try {
+        const response = await fetch(`/api/saved-searches/${searchId}?email=${encodeURIComponent(userEmail)}`, { method: "DELETE" });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Could not delete the saved search");
+        }
+        await loadSavedSearches();
+        setStatus("Saved search deleted.");
+      } catch (error) {
+        setStatus(error.message, true);
+      }
+    });
+  });
+}
+
+function attachLeadRowActions() {
+  businessesEl.querySelectorAll(".lead-save-button").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const container = button.closest(".lead-controls");
+      if (!container || !userEmail) {
+        return;
+      }
+
+      const businessId = Number(container.dataset.businessId);
+      const tags = container.querySelector(".lead-tags-input").value
+        .split(",")
+        .map((tag) => tag.trim())
+        .filter(Boolean);
+
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/leads", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: userEmail,
+            business_id: businessId,
+            status: container.querySelector(".lead-status-select").value,
+            tags,
+            notes: container.querySelector(".lead-notes-input").value,
+            is_archived: container.querySelector(".lead-archive-input").checked,
+          }),
+        });
+        const data = await response.json();
+        if (!response.ok) {
+          throw new Error(data.detail || "Could not save the lead record");
+        }
+
+        await Promise.all([loadBusinesses(), loadLeadSummary()]);
+        setStatus(`Lead updated for business ${businessId}.`);
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
+    });
   });
 }
 
@@ -699,12 +1076,40 @@ async function loadRuns() {
 }
 
 async function loadBusinesses() {
-  const response = await fetch(`/api/businesses?page=${businessListState.page}&page_size=${businessListState.pageSize}`);
+  const response = await fetch(`/api/businesses?${buildBusinessQueryString()}`);
   if (!response.ok) {
     throw new Error("Failed to load businesses");
   }
   const data = await response.json();
   renderBusinesses(data.items, data.pagination);
+}
+
+async function loadLeadSummary() {
+  if (!userEmail) {
+    renderLeadSummary({ total: 0, active: 0, archived: 0, counts: {} });
+    return;
+  }
+
+  const response = await fetch(`/api/leads/summary/${encodeURIComponent(userEmail)}`);
+  if (!response.ok) {
+    throw new Error("Failed to load lead summary");
+  }
+
+  renderLeadSummary(await response.json());
+}
+
+async function loadSavedSearches() {
+  if (!userEmail) {
+    renderSavedSearches([]);
+    return;
+  }
+
+  const response = await fetch(`/api/saved-searches/${encodeURIComponent(userEmail)}`);
+  if (!response.ok) {
+    throw new Error("Failed to load saved searches");
+  }
+
+  renderSavedSearches(await response.json());
 }
 
 async function loadInsights() {
@@ -775,10 +1180,30 @@ async function saveProfile() {
 
   saveProfileButtonEl.disabled = true;
   try {
-    const response = await fetch("/api/users/profile", {
-      method: "PUT",
+    const wantsAccountRegistration = !authToken && (payload.password || payload.confirm_password);
+    if (wantsAccountRegistration && payload.password !== payload.confirm_password) {
+      throw new Error("Password confirmation does not match");
+    }
+
+    const endpoint = wantsAccountRegistration
+      ? "/api/auth/register"
+      : "/api/users/profile";
+    const method = wantsAccountRegistration ? "POST" : "PUT";
+    const requestBody = wantsAccountRegistration
+      ? payload
+      : {
+          full_name: payload.full_name,
+          company_name: payload.company_name,
+          email: payload.email,
+          phone: payload.phone,
+          country: payload.country,
+          preferred_payment_provider: payload.preferred_payment_provider,
+        };
+
+    const response = await fetch(endpoint, {
+      method,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestBody),
     });
 
     const data = await response.json();
@@ -786,9 +1211,18 @@ async function saveProfile() {
       throw new Error(data.detail || "Failed to save profile");
     }
 
-    syncEmailFields(payload.email);
-    setProfileStatus(`Profile saved for ${data.company_name}. Your 15-day trial is active until ${new Date(data.trial_ends_at).toLocaleDateString()}.`);
-    await Promise.all([loadAccessStatus(), loadUserDashboard()]);
+    if (wantsAccountRegistration) {
+      setAuthSession(data.access_token, data.user);
+      loginFormEl.reset();
+      setProfileStatus(`Account created for ${data.user.company_name}. Your 15-day trial is active until ${new Date(data.user.trial_ends_at).toLocaleDateString()}.`);
+    } else {
+      syncEmailFields(payload.email);
+      populateProfileForm(data);
+      updateAuthUi(data);
+      setProfileStatus(`Profile saved for ${data.company_name}. Your trial or subscription access remains linked to this account.`);
+    }
+
+    await Promise.all([loadAccessStatus(), loadUserDashboard(), loadBusinesses(), loadLeadSummary(), loadSavedSearches()]);
     return true;
   } catch (error) {
     setProfileStatus(error.message, true);
@@ -880,6 +1314,30 @@ profileFormEl.addEventListener("submit", async (event) => {
   await saveProfile();
 });
 
+loginFormEl.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const formData = new FormData(loginFormEl);
+  const email = (formData.get("email") || "").toString().trim();
+  const password = (formData.get("password") || "").toString();
+
+  try {
+    const user = await loginUserAccount(email, password);
+    setStatus(`Logged in as ${user.email}.`);
+    await Promise.all([loadAccessStatus(), loadUserDashboard(), loadBusinesses(), loadLeadSummary(), loadSavedSearches()]);
+  } catch (error) {
+    setAuthStateMessage(error.message, true);
+  }
+});
+
+logoutBtnEl.addEventListener("click", async () => {
+  clearAuthSession();
+  loginFormEl.reset();
+  profileFormEl.reset();
+  renderBusinessExportToolbar();
+  await Promise.all([loadBusinesses(), loadRuns(), loadInsights()]);
+  setStatus("Logged out.");
+});
+
 formEl.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -949,6 +1407,15 @@ document.getElementById("refresh-businesses").addEventListener("click", async ()
   }
 });
 
+document.getElementById("refresh-leads").addEventListener("click", async () => {
+  try {
+    await Promise.all([loadLeadSummary(), loadSavedSearches(), loadBusinesses()]);
+    setStatus("Lead desk refreshed.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
 document.getElementById("refresh-insights").addEventListener("click", async () => {
   try {
     await loadInsights();
@@ -984,20 +1451,93 @@ dashboardEditProfileEl.addEventListener("click", () => {
   profileFormEl.querySelector('input[name="full_name"]').focus();
 });
 
+leadFilterFormEl.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  updateLeadFilterState(getLeadFilterPayload());
+  businessListState.page = 1;
+  try {
+    await loadBusinesses();
+    setStatus("Lead filters applied.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("clearLeadFilters").addEventListener("click", async () => {
+  updateLeadFilterState({});
+  businessListState.page = 1;
+  syncLeadFilterForm();
+  try {
+    await loadBusinesses();
+    setStatus("Lead filters cleared.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("saveCurrentSearch").addEventListener("click", async () => {
+  if (!userEmail) {
+    setStatus("Save your profile first so the platform can attach the saved search to your account.", true);
+    return;
+  }
+
+  const name = (savedSearchNameEl.value || "").trim();
+  if (!name) {
+    setStatus("Enter a name for the saved search.", true);
+    return;
+  }
+
+  const filters = getLeadFilterPayload();
+  try {
+    const response = await fetch("/api/saved-searches", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: userEmail,
+        name,
+        search_query: filters.search || null,
+        city: filters.city || null,
+        country: filters.country || null,
+        category: filters.category || null,
+        lead_status: filters.leadStatus || null,
+        tag: filters.tag || null,
+        saved_only: filters.savedOnly,
+        alert_enabled: true,
+      }),
+    });
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.detail || "Could not save the search");
+    }
+    savedSearchNameEl.value = "";
+    await loadSavedSearches();
+    setStatus(`Saved search created: ${name}.`);
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
 if (userEmail) {
   syncEmailFields(userEmail);
 }
 
 renderBusinessExportToolbar();
 renderDashboardEmpty("Save your company profile to unlock the personal dashboard and self-service subscription controls.");
+syncLeadFilterForm();
+renderLeadSummary({ total: 0, active: 0, archived: 0, counts: {} });
+renderSavedSearches([]);
+updateAuthUi(null);
 
 (async () => {
   try {
     await loadPaymentConfig();
     await Promise.all([loadPricing(), loadRuns(), loadBusinesses(), loadInsights()]);
 
-    if (userEmail) {
-      await Promise.all([loadAccessStatus(), loadUserDashboard()]);
+    if (authToken) {
+      await restoreSession();
+      await Promise.all([loadAccessStatus(), loadUserDashboard(), loadLeadSummary(), loadSavedSearches(), loadBusinesses()]);
+    } else if (userEmail) {
+      await Promise.all([loadAccessStatus(), loadUserDashboard(), loadLeadSummary(), loadSavedSearches(), loadBusinesses()]);
     } else {
       updateAccessDisplay();
     }

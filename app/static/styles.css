@@ -40,7 +40,6 @@ body {
   align-items: stretch;
   margin-bottom: 24px;
 }
-
 .hero,
 .panel {
   background: var(--surface);
@@ -263,6 +262,25 @@ h2,
   position: relative;
 }
 
+.auth-layout {
+  display: grid;
+  grid-template-columns: 1.2fr 0.8fr;
+  gap: 16px;
+}
+
+.auth-card {
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 18px;
+  display: grid;
+  gap: 12px;
+}
+
+.auth-session-card {
+  align-content: start;
+}
+
 .compact-form {
   align-items: end;
 }
@@ -398,18 +416,31 @@ h2,
 }
 
 label {
+
+  .saved-search-toolbar,
+  .lead-filter-actions {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
   display: grid;
   gap: 8px;
   font-weight: 600;
 }
 
 input,
+textarea,
 select,
 button {
   font: inherit;
 }
 
-input {
+.readonly-field {
+  background: rgba(239, 229, 213, 0.8);
+  color: var(--muted);
+}
+
+input,
+textarea {
   width: 100%;
   padding: 12px 14px;
   border-radius: 14px;
@@ -426,7 +457,8 @@ select {
   background: var(--surface-strong);
 }
 
-input:focus {
+input:focus,
+textarea:focus {
   outline: none;
   border-color: rgba(216, 111, 69, 0.45);
   box-shadow: 0 0 0 4px rgba(216, 111, 69, 0.12);
@@ -544,6 +576,73 @@ button:disabled {
 
 .table-wrap {
   overflow-x: auto;
+}
+
+.table-submeta {
+  color: var(--muted);
+  font-size: 0.84rem;
+  margin-top: 4px;
+}
+
+.table-link {
+  font-weight: 700;
+}
+
+.lead-summary-grid {
+  margin-bottom: 18px;
+}
+
+.lead-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 18px;
+}
+
+.lead-filter-actions {
+  display: flex;
+  gap: 10px;
+  align-items: end;
+}
+
+.saved-search-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 10px;
+}
+
+.saved-search-row {
+  align-items: center;
+}
+
+.saved-search-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.lead-cell {
+  min-width: 280px;
+}
+
+.lead-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.lead-controls textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
+.checkbox-inline {
+  grid-template-columns: auto 1fr;
+  font-weight: 500;
+}
+
+.lead-empty-card {
+  grid-column: 1 / -1;
 }
 
 table {
@@ -880,6 +979,8 @@ a {
 @media (max-width: 800px) {
   .hero,
   .form-grid,
+  .auth-layout,
+  .lead-filter-grid,
   .insight-columns,
   .insight-grid,
   .dashboard-summary-grid,
@@ -898,8 +999,16 @@ a {
   }
 
   .download-toolbar,
-  .run-actions {
+  .run-actions,
+  .saved-search-toolbar,
+  .lead-filter-actions {
     width: 100%;
+  }
+
+  .saved-search-toolbar,
+  .lead-filter-actions {
+    display: grid;
+    grid-template-columns: 1fr;
   }
 
   .export-button {

@@ -5,6 +5,7 @@ from sqlalchemy import func
 
 from app.admin_models import AdminUser
 from app.admin_schemas import AdminUserCreate
+from app.payment_models import PaymentProvider, PlatformUser
 import bcrypt
 
 
@@ -60,6 +61,39 @@ def verify_admin_token(token: str) -> Optional[dict]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
+    except JWTError:
+        return None
+
+
+def create_user_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+    """Create a JWT token for platform-user authentication."""
+    from jose import jwt
+
+    to_encode = data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(hours=24)
+
+    to_encode.update({"exp": expire})
+
+    import os
+    secret_key = os.getenv("USER_JWT_SECRET", os.getenv("ADMIN_JWT_SECRET", "user-secret-key-change-in-production"))
+    algorithm = "HS256"
+
+    return jwt.encode(to_encode, secret_key, algorithm=algorithm)
+
+
+def verify_user_token(token: str) -> Optional[dict]:
+    """Verify and decode a platform-user JWT token."""
+    from jose import jwt, JWTError
+
+    import os
+    secret_key = os.getenv("USER_JWT_SECRET", os.getenv("ADMIN_JWT_SECRET", "user-secret-key-change-in-production"))
+    algorithm = "HS256"
+
+    try:
+        return jwt.decode(token, secret_key, algorithms=[algorithm])
     except JWTError:
         return None
 
@@ -128,3 +162,70 @@ def deactivate_admin_user(db: Session, admin: AdminUser) -> AdminUser:
     db.commit()
     db.refresh(admin)
     return admin
+
+
+def get_platform_user_by_email(db: Session, email: str) -> Optional[PlatformUser]:
+    return db.query(PlatformUser).filter(PlatformUser.email == email).first()
+
+
+def register_platform_user(
+    db: Session,
+    *,
+    email: str,
+    password: str,
+    full_name: str,
+    company_name: str,
+    phone: str,
+    country: Optional[str],
+    preferred_payment_provider: PaymentProvider,
+) -> PlatformUser:
+    user = get_platform_user_by_email(db, email)
+    hashed_password = hash_password(password)
+    now = datetime.utcnow()
+
+    if user is None:
+        user = PlatformUser(
+            email=email,
+            hashed_password=hashed_password,
+            full_name=full_name.strip(),
+            company_name=company_name.strip(),
+            phone=phone.strip(),
+            country=(country or "").strip() or None,
+            preferred_payment_provider=preferred_payment_provider,
+            trial_started_at=now,
+            trial_ends_at=now + timedelta(days=15),
+            is_active=True,
+        )
+        db.add(user)
+    else:
+        if user.hashed_password:
+            raise ValueError("An account already exists for this email. Please log in.")
+        user.hashed_password = hashed_password
+        user.full_name = full_name.strip()
+        user.company_name = company_name.strip()
+        user.phone = phone.strip()
+        user.country = (country or "").strip() or None
+        user.preferred_payment_provider = preferred_payment_provider
+        user.is_active = True
+
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+def authenticate_platform_user(db: Session, email: str, password: str) -> Optional[PlatformUser]:
+    user = get_platform_user_by_email(db, email)
+    if not user or not user.hashed_password:
+        return None
+    if not verify_password(password, user.hashed_password):
+        return None
+    if not user.is_active:
+        return None
+    return user
+
+
+def update_platform_user_last_login(db: Session, user: PlatformUser) -> PlatformUser:
+    user.last_login = datetime.utcnow()
+    db.commit()
+    db.refresh(user)
+    return user
