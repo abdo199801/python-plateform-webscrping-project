@@ -51,6 +51,12 @@ function resolveApiUrl(input) {
   return `${apiBaseUrl}${input}`;
 }
 
+function syncAdminLinks() {
+  document.querySelectorAll('a[href="/admin/login"]').forEach((link) => {
+    link.setAttribute("href", resolveApiUrl("/admin/login"));
+  });
+}
+
 window.fetch = (input, init = {}) => {
   const headers = new Headers(init.headers || {});
   if (authToken && !headers.has("Authorization")) {
@@ -1577,6 +1583,7 @@ if (userEmail) {
   syncEmailFields(userEmail);
 }
 
+syncAdminLinks();
 renderBusinessExportToolbar();
 renderDashboardEmpty("Save your company profile to unlock the personal dashboard and self-service subscription controls.");
 syncLeadFilterForm();
