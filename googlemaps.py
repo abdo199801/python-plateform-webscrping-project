@@ -24,8 +24,10 @@ import random
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager
+    from webdriver_manager.core.os_manager import ChromeType
 except ImportError:
     ChromeDriverManager = None
+    ChromeType = None
 
 # Configure logging
 logging.basicConfig(
@@ -135,6 +137,29 @@ class UniversalGoogleMapsScraper:
 
         logger.warning("No explicit Chrome/Chromium binary found. Selenium will try its default browser resolution.")
         return None
+
+    def _resolve_browser_type(self, browser_binary: Optional[str]) -> Optional[str]:
+        forced_type = os.getenv("CHROME_BROWSER_TYPE", "").strip().lower()
+        if forced_type:
+            if forced_type in {"chromium", "chrome", "google", "edge", "msedge", "brave"}:
+                mapping = {
+                    "chromium": getattr(ChromeType, "CHROMIUM", None),
+                    "chrome": getattr(ChromeType, "GOOGLE", None),
+                    "google": getattr(ChromeType, "GOOGLE", None),
+                    "edge": getattr(ChromeType, "MSEDGE", None),
+                    "msedge": getattr(ChromeType, "MSEDGE", None),
+                    "brave": getattr(ChromeType, "BRAVE", None),
+                }
+                return mapping.get(forced_type)
+
+        binary_name = os.path.basename(browser_binary or "").lower()
+        if "chromium" in binary_name:
+            return getattr(ChromeType, "CHROMIUM", None)
+        if "edge" in binary_name:
+            return getattr(ChromeType, "MSEDGE", None)
+        if "brave" in binary_name:
+            return getattr(ChromeType, "BRAVE", None)
+        return getattr(ChromeType, "GOOGLE", None)
 
     def determine_location_from_input(self, location_input: str) -> Dict:
         """Parse location input to extract country, city, etc."""
@@ -441,6 +466,7 @@ class UniversalGoogleMapsScraper:
 
         # Set Chrome binary location explicitly
         browser_binary = self._resolve_browser_binary()
+        browser_type = self._resolve_browser_type(browser_binary)
         if browser_binary:
             chrome_options.binary_location = browser_binary
 
@@ -473,7 +499,10 @@ class UniversalGoogleMapsScraper:
                 raise RuntimeError("webdriver-manager is not installed in the active Python environment")
 
             os.environ.setdefault("WDM_LOCAL", "1")
-            driver_path = ChromeDriverManager().install()
+            manager_kwargs = {}
+            if browser_type is not None:
+                manager_kwargs["chrome_type"] = browser_type
+            driver_path = ChromeDriverManager(**manager_kwargs).install()
             service = Service(driver_path)
             return webdriver.Chrome(service=service, options=chrome_options)
         
