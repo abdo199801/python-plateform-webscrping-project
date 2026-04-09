@@ -4,7 +4,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.common.exceptions import NoSuchElementException, TimeoutException, WebDriverException
 from selenium.webdriver.common.keys import Keys
 import pandas as pd
 import time
@@ -28,6 +28,10 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+PAGE_LOAD_TIMEOUT_SECONDS = 45
+RESULTS_PANEL_TIMEOUT_SECONDS = 25
+SCRIPT_TIMEOUT_SECONDS = 30
 
 
 @dataclass
@@ -343,6 +347,7 @@ class UniversalGoogleMapsScraper:
         """Setup Chrome WebDriver with enhanced anti-detection measures and crash prevention"""
         chrome_options = Options()
         runtime_system = platform.system().lower()
+        chrome_options.page_load_strategy = "eager"
 
         # Use headless mode only if explicitly requested
         if self.headless:
@@ -352,8 +357,7 @@ class UniversalGoogleMapsScraper:
         # These options help prevent Chrome from crashing on Windows
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-        # Note: --disable-gpu can sometimes cause issues on Windows, try without it first
-        # chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--disable-gpu-software-rasterization")
 
         # Use a temporary user data directory to avoid profile corruption
@@ -364,13 +368,10 @@ class UniversalGoogleMapsScraper:
         cache_dir = tempfile.mkdtemp(prefix="chrome_cache_")
         chrome_options.add_argument(f"--disk-cache-dir={cache_dir}")
 
-        # Add remote debugging port to help with DevToolsActivePort issue
-        chrome_options.add_argument("--remote-debugging-port=9222")
-        
-        # Add single process flag (can help on Windows)
-        if os.name != "nt":
-            chrome_options.add_argument("--single-process")
-            chrome_options.add_argument("--no-zygote")
+        if os.name == "nt":
+            chrome_options.add_argument("--remote-debugging-port=9222")
+        else:
+            chrome_options.add_argument("--remote-debugging-pipe")
 
         # ===== ANTI-DETECTION SETTINGS =====
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -525,6 +526,9 @@ class UniversalGoogleMapsScraper:
 
         self.driver = driver
         self.wait = WebDriverWait(self.driver, 20)
+        self.driver.set_page_load_timeout(PAGE_LOAD_TIMEOUT_SECONDS)
+        self.driver.set_script_timeout(SCRIPT_TIMEOUT_SECONDS)
+        self.driver.implicitly_wait(0)
 
         # Execute CDP commands to prevent detection
         try:
@@ -557,6 +561,76 @@ class UniversalGoogleMapsScraper:
                 pass
 
         logger.info("WebDriver setup complete with anti-detection measures")
+
+    def _wait_for_results_or_empty_state(self):
+        """Wait until Google Maps shows results, an empty state, or fail fast with diagnostics."""
+        result_selectors = [
+            "div[role='feed']",
+            "div[role='article']",
+            "div.Nv2PK",
+            "a.hfpxzc",
+        ]
+        empty_state_selectors = [
+            "div[role='main']",
+            "div.section-no-result-title",
+            "div.fontBodyMedium",
+        ]
+
+        def _page_ready(driver):
+            for selector in result_selectors:
+                try:
+                    if driver.find_elements(By.CSS_SELECTOR, selector):
+                        return "results"
+                except Exception:
+                    continue
+
+            page_source = (driver.page_source or "").lower()
+            empty_markers = [
+                "no results found",
+                "did not match any locations",
+                "no results",
+            ]
+            if any(marker in page_source for marker in empty_markers):
+                return "empty"
+
+            for selector in empty_state_selectors:
+                try:
+                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                except Exception:
+                    continue
+
+                if any((element.text or "").strip() for element in elements):
+                    return "shell"
+
+            return False
+
+        try:
+            state = WebDriverWait(self.driver, RESULTS_PANEL_TIMEOUT_SECONDS).until(_page_ready)
+        except TimeoutException as exc:
+            title = self.driver.title if self.driver else "unknown"
+            current_url = self.driver.current_url if self.driver else "unknown"
+            raise TimeoutException(
+                f"Google Maps did not load visible results within {RESULTS_PANEL_TIMEOUT_SECONDS}s. "
+                f"Title='{title}', URL='{current_url}'."
+            ) from exc
+
+        if state == "empty":
+            logger.info("Google Maps returned an empty state for this search.")
+            return False
+
+        return True
+
+    def _open_search_page(self, url: str) -> None:
+        try:
+            self.driver.get(url)
+        except TimeoutException:
+            logger.warning("Page load timed out; stopping further network activity and continuing with the rendered DOM.")
+            try:
+                self.driver.execute_script("window.stop();")
+            except Exception:
+                pass
+        except WebDriverException as exc:
+            raise RuntimeError(f"Browser navigation failed: {exc}") from exc
 
     def build_search_url(self, keyword: str, location: str = "", radius: str = "10000"):
         """Build optimized Google Maps search URL for worldwide search"""
@@ -883,11 +957,19 @@ class UniversalGoogleMapsScraper:
         logger.info(f"🔗 URL: {url}")
 
         # Navigate
-        self.driver.get(url)
+        self._open_search_page(url)
         time.sleep(3)
 
         # Handle UI elements
         self.handle_google_maps_ui()
+
+        has_results = self._wait_for_results_or_empty_state()
+        if not has_results:
+            try:
+                self.driver.quit()
+            except Exception:
+                pass
+            return []
 
         # Scroll to load results
         self.scroll_results_enhanced()
