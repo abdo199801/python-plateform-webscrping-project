@@ -2,6 +2,8 @@
 
 ## Google Maps Scraper Full-stack App
 
+Full platform documentation is available in [PLATFORM_DOCUMENTATION.md](PLATFORM_DOCUMENTATION.md).
+
 This project now includes:
 
 - A FastAPI backend

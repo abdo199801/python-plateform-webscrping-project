@@ -62,8 +62,6 @@ window.fetch = (input, init = {}) => {
 
 let userEmail = localStorage.getItem("userEmail") || "";
 let authToken = localStorage.getItem("authToken") || "";
-let stripe = null;
-let paypalSdkReady = false;
 let paymentConfig = {
   payments_enabled: false,
   paypal_enabled: false,
@@ -76,6 +74,7 @@ let paymentConfig = {
 };
 let accessState = null;
 const runListState = { page: 1, pageSize: 6 };
+const DEFAULT_MAX_RESULTS_PER_SCRAPE = 100;
 const businessListState = {
   page: 1,
   pageSize: 10,
@@ -92,150 +91,6 @@ let dashboardState = null;
 let savedSearchesState = [];
 
 const LEAD_STATUS_OPTIONS = ["new", "contacted", "qualified", "proposal", "won", "lost"];
-
-function buildPayPalSdkUrl() {
-  const params = new URLSearchParams({
-    "client-id": paymentConfig.paypal_client_id,
-    currency: paymentConfig.paypal_currency || "USD",
-    components: "buttons",
-    intent: "capture",
-  });
-
-  return `${paymentConfig.paypal_sdk_base || "https://www.paypal.com/sdk/js"}?${params.toString()}`;
-}
-
-function loadScript(src, dataset = {}) {
-  return new Promise((resolve, reject) => {
-    const existing = document.querySelector(`script[src="${src}"]`);
-    if (existing) {
-      if (existing.dataset.loaded === "true") {
-        resolve();
-        return;
-      }
-      existing.addEventListener("load", () => resolve(), { once: true });
-      existing.addEventListener("error", () => reject(new Error(`Failed to load script: ${src}`)), { once: true });
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.src = src;
-    Object.entries(dataset).forEach(([key, value]) => {
-      script.dataset[key] = value;
-    });
-    script.addEventListener("load", () => {
-      script.dataset.loaded = "true";
-      resolve();
-    }, { once: true });
-    script.addEventListener("error", () => reject(new Error(`Failed to load script: ${src}`)), { once: true });
-    document.head.appendChild(script);
-  });
-}
-
-async function loadPayPalSdk() {
-  if (!paymentConfig.paypal_enabled) {
-    paypalSdkReady = false;
-    return;
-  }
-
-  await loadScript(buildPayPalSdkUrl(), { sdkIntegrationSource: "mapsscraper-pro" });
-  paypalSdkReady = Boolean(window.paypal && typeof window.paypal.Buttons === "function");
-}
-
-async function createPayPalOrder(tier) {
-  const saved = await saveProfile();
-  if (!saved) {
-    throw new Error("Save the profile first so the platform can link the PayPal order to your account.");
-  }
-
-  const response = await fetch("/api/paypal/orders", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: userEmail,
-      tier,
-      provider: "paypal",
-    }),
-  });
-
-  const data = await response.json();
-  if (!response.ok) {
-    const errorDetail = data?.details?.[0];
-    const errorMessage = errorDetail
-      ? `${errorDetail.issue} ${errorDetail.description} (${data.debug_id || "paypal"})`
-      : data.detail || "Could not initiate PayPal checkout.";
-    throw new Error(errorMessage);
-  }
-
-  return data.id;
-}
-
-async function capturePayPalOrder(orderId) {
-  const response = await fetch(`/api/paypal/orders/${encodeURIComponent(orderId)}/capture`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-  });
-  const data = await response.json();
-  if (!response.ok) {
-    const errorDetail = data?.details?.[0];
-    const errorMessage = errorDetail
-      ? `${errorDetail.description} (${data.debug_id || "paypal"})`
-      : data.detail || "PayPal capture failed.";
-    throw new Error(errorMessage);
-  }
-  return data;
-}
-
-function renderPayPalButtons(plans) {
-  if (!paymentConfig.paypal_enabled || !paypalSdkReady || !window.paypal) {
-    return;
-  }
-
-  plans
-    .filter((plan) => plan.tier !== "free")
-    .forEach((plan) => {
-      const container = document.getElementById(`paypal-button-${plan.tier}`);
-      if (!container) {
-        return;
-      }
-
-      container.innerHTML = "";
-      window.paypal.Buttons({
-        style: {
-          shape: "rect",
-          layout: "vertical",
-          color: "gold",
-          label: "paypal",
-        },
-        async createOrder() {
-          return createPayPalOrder(plan.tier);
-        },
-        async onApprove(data, actions) {
-          try {
-            const orderData = await capturePayPalOrder(data.orderID);
-            const errorDetail = orderData?.details?.[0];
-
-            if (errorDetail?.issue === "INSTRUMENT_DECLINED") {
-              return actions.restart();
-            }
-            if (errorDetail) {
-              throw new Error(`${errorDetail.description} (${orderData.debug_id || "paypal"})`);
-            }
-
-            setStatus(`PayPal payment completed for the ${plan.name} plan. Subscription access is now active.`);
-            await Promise.all([loadAccessStatus(), loadUserDashboard()]);
-          } catch (error) {
-            setStatus(error.message, true);
-          }
-        },
-        onError(error) {
-          setStatus(error.message || "PayPal checkout failed.", true);
-        },
-        onCancel() {
-          setStatus("PayPal checkout was cancelled.", true);
-        },
-      }).render(container);
-    });
-}
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -271,6 +126,19 @@ function formatNumber(value) {
 
 function formatDate(value) {
   return value ? new Date(value).toLocaleString() : "-";
+}
+
+async function readJsonResponse(response) {
+  const raw = await response.text();
+  if (!raw) {
+    return null;
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`Server returned an invalid response (${response.status}).`);
+  }
 }
 
 function formatStatusLabel(value) {
@@ -489,11 +357,13 @@ async function loginUserAccount(email, password) {
 function updateAccessDisplay() {
   const daysLeft = accessState ? accessState.trial_days_left : 0;
   statusCreditsEl.textContent = daysLeft;
+  const maxResultsField = formEl.querySelector('input[name="max_results"]');
 
   if (!accessState) {
     creditDisplayEl.innerHTML = `<span class="credit-icon">⏳</span><span id="userCredits">0</span> trial days left`;
     creditWarningEl.style.display = "none";
     creditDisplayEl.style.opacity = "0.6";
+    maxResultsField.max = String(DEFAULT_MAX_RESULTS_PER_SCRAPE);
     return;
   }
 
@@ -503,12 +373,16 @@ function updateAccessDisplay() {
     creditWarningEl.style.display = "none";
     statusCreditsEl.textContent = accessState.trial_days_left;
     creditDisplayEl.style.opacity = "1";
+    maxResultsField.max = accessState.subscription_tier === "enterprise"
+      ? "500"
+      : String(DEFAULT_MAX_RESULTS_PER_SCRAPE);
     return;
   }
 
   creditDisplayEl.innerHTML = `<span class="credit-icon">⏳</span><span id="userCredits">${daysLeft}</span> trial days left`;
   creditWarningEl.style.display = accessState.requires_subscription ? "block" : "none";
   creditDisplayEl.style.opacity = accessState.can_scrape ? "1" : "0.75";
+  maxResultsField.max = String(DEFAULT_MAX_RESULTS_PER_SCRAPE);
 }
 
 function renderSignalList(container, items, emptyMessage, formatter) {
@@ -962,9 +836,9 @@ function renderPricingPlans(plans) {
             ${plan.features.map((feature) => `<li>${escapeHtml(feature)}</li>`).join("")}
           </ul>
           <div class="pricing-actions-row">
-            <button type="button" data-tier="${escapeHtml(plan.tier)}" data-provider="card" ${paymentConfig.payments_enabled ? "" : "disabled"}>Pay by Card</button>
+            <button type="button" data-tier="${escapeHtml(plan.tier)}" data-action="request-upgrade">Request Upgrade</button>
           </div>
-          <div id="paypal-button-${escapeHtml(plan.tier)}" class="paypal-button-slot"></div>
+          <p class="pricing-note">Checkout is disabled for now. Upgrade activation is handled manually.</p>
         </div>
       `;
     })
@@ -976,13 +850,11 @@ function renderPricingPlans(plans) {
     });
   });
 
-  container.querySelectorAll("button[data-tier]").forEach((button) => {
+  container.querySelectorAll("button[data-action='request-upgrade']").forEach((button) => {
     button.addEventListener("click", async () => {
-      await subscribeToPlan(button.dataset.tier, button.dataset.provider);
+      await subscribeToPlan(button.dataset.tier || "pro", "card");
     });
   });
-
-  renderPayPalButtons(plans);
 }
 
 function renderInsights(insights) {
@@ -1041,29 +913,17 @@ function renderInsights(insights) {
 }
 
 async function loadPaymentConfig() {
-  const response = await fetch("/api/payment/config");
-  if (!response.ok) {
-    throw new Error("Failed to load payment configuration");
-  }
-
-  paymentConfig = await response.json();
-  stripe = paymentConfig.payments_enabled && paymentConfig.publishable_key && window.Stripe
-    ? window.Stripe(paymentConfig.publishable_key)
-    : null;
-
-  if (paymentConfig.paypal_enabled) {
-    await loadPayPalSdk();
-  }
-
-  if (paymentConfig.payments_enabled && paymentConfig.paypal_enabled) {
-    setPaymentBanner("Subscriptions are available by card and PayPal.", "success");
-  } else if (paymentConfig.payments_enabled) {
-    setPaymentBanner("Card checkout is ready. Add PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET to enable PayPal too.", "warning");
-  } else if (paymentConfig.paypal_enabled) {
-    setPaymentBanner("PayPal is ready. Add STRIPE_PUBLISHABLE_KEY to enable card checkout too.", "warning");
-  } else {
-    setPaymentBanner("Payment providers are not configured yet. Users can still start the free trial.", "warning");
-  }
+  paymentConfig = {
+    payments_enabled: false,
+    paypal_enabled: false,
+    publishable_key: "",
+    paypal_client_id: "",
+    paypal_currency: "USD",
+    paypal_environment: "sandbox",
+    paypal_sdk_base: "",
+    trial_days: 15,
+  };
+  setPaymentBanner("Payment integration is disabled for now. Users can still start the free trial, and upgrades are handled manually by admin.", "warning");
 }
 
 async function loadRuns() {
@@ -1263,50 +1123,10 @@ async function cancelOwnSubscription() {
 async function subscribeToPlan(tier, provider) {
   const saved = await saveProfile();
   if (!saved) {
-    setStatus("Save the profile first so the platform can link the subscription to your account.", true);
+    setStatus("Save the profile first so the platform can link the upgrade request to your account.", true);
     return;
   }
-
-  if (provider === "card" && !stripe) {
-    setStatus("Card checkout is not configured yet.", true);
-    return;
-  }
-
-  if (provider === "paypal" && !paymentConfig.paypal_enabled) {
-    setStatus("PayPal checkout is not configured yet.", true);
-    return;
-  }
-
-  if (provider === "paypal") {
-    setStatus("Use the PayPal button for the selected plan to complete checkout.", true);
-    return;
-  }
-
-  try {
-    const response = await fetch("/api/subscription/create-checkout-session", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        email: userEmail,
-        tier,
-        provider,
-      }),
-    });
-    const data = await response.json();
-    if (!response.ok) {
-      throw new Error(data.detail || "Subscription failed");
-    }
-
-    if (provider === "card") {
-      const result = await stripe.redirectToCheckout({ sessionId: data.session_id });
-      if (result.error) {
-        throw new Error(result.error.message);
-      }
-      return;
-    }
-  } catch (error) {
-    setStatus(error.message, true);
-  }
+  setStatus(`Payment integration is disabled for now. Contact the admin to activate the ${String(tier).toUpperCase()} plan on your account.`, true);
 }
 
 profileFormEl.addEventListener("submit", async (event) => {
@@ -1363,6 +1183,13 @@ formEl.addEventListener("submit", async (event) => {
     headless: formData.get("headless") === "on",
     save_files: formData.get("save_files") === "on",
   };
+  const maxResultsAllowed = accessState?.has_active_subscription && accessState.subscription_tier === "enterprise"
+    ? 500
+    : DEFAULT_MAX_RESULTS_PER_SCRAPE;
+  if (payload.max_results > maxResultsAllowed) {
+    setStatus(`Your current plan allows up to ${maxResultsAllowed} results per scrape. Upgrade to scrape more.`, true);
+    return;
+  }
 
   scrapeButtonEl.disabled = true;
   setStatus(`Running scrape in ${payload.headless ? "headless" : "visible"} mode. Selenium is opening Google Maps and collecting businesses...`);
@@ -1373,9 +1200,12 @@ formEl.addEventListener("submit", async (event) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) {
-      throw new Error(data.detail || "Scrape failed");
+      throw new Error(data?.detail || `Scrape failed (${response.status})`);
+    }
+    if (!data) {
+      throw new Error("The server returned an empty response for the scrape request.");
     }
 
     setStatus(`Saved ${data.results.length} businesses. Access mode used: ${data.billing_mode}. Trial days left: ${data.remaining_credits}.`);
@@ -1527,6 +1357,7 @@ syncLeadFilterForm();
 renderLeadSummary({ total: 0, active: 0, archived: 0, counts: {} });
 renderSavedSearches([]);
 updateAuthUi(null);
+setPaymentBanner("Payment integration is disabled for now. Users can still start the free trial, and upgrades are handled manually by admin.", "warning");
 
 (async () => {
   try {

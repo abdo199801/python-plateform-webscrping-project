@@ -28,6 +28,7 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "sk_test_placeholder")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_placeholder")
 TRIAL_DURATION_DAYS = 15
 SCRAPE_ALLOWED_TIERS = {SubscriptionTier.PRO, SubscriptionTier.ENTERPRISE}
+DEFAULT_MAX_RESULTS_PER_SCRAPE = 100
 
 # Pricing configuration
 PRICING_PLANS = [
@@ -37,7 +38,7 @@ PRICING_PLANS = [
         "price": 0,
         "billing_period": "15 days",
         "scrape_credits": 999,
-        "max_results_per_scrape": 100,
+        "max_results_per_scrape": DEFAULT_MAX_RESULTS_PER_SCRAPE,
         "features": [
             "Unlimited scrapes for 15 days",
             "Collect business contacts",
@@ -52,7 +53,7 @@ PRICING_PLANS = [
         "price": 79,
         "billing_period": "monthly",
         "scrape_credits": 999,
-        "max_results_per_scrape": 100,
+        "max_results_per_scrape": DEFAULT_MAX_RESULTS_PER_SCRAPE,
         "features": [
             "Unlimited scrapes after trial",
             "100 results per scrape",
@@ -733,7 +734,7 @@ def get_max_results_for_tier(tier: SubscriptionTier) -> int:
     plan = next((p for p in PRICING_PLANS if p["tier"] == tier.value), None)
     if plan:
         return plan["max_results_per_scrape"]
-    return 25  # Default for free tier
+    return DEFAULT_MAX_RESULTS_PER_SCRAPE
 
 
 def activate_subscription_for_user(

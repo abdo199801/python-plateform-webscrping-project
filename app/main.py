@@ -69,6 +69,7 @@ from app.payment_service import (
     create_checkout_session,
     create_paypal_subscription_order,
     create_subscription_checkout_session,
+    DEFAULT_MAX_RESULTS_PER_SCRAPE,
     get_user_dashboard,
     get_max_results_for_tier,
     get_user_access_state,
@@ -92,9 +93,6 @@ from app.lead_service import (
     serialize_saved_search,
     upsert_lead_record,
 )
-
-import stripe
-
 
 user_security = HTTPBearer(auto_error=False)
 
@@ -381,16 +379,20 @@ async def create_scrape(
             detail="Your 15-day trial has ended. Subscribe to Professional or Enterprise to keep scraping.",
         )
 
+    max_results_allowed = DEFAULT_MAX_RESULTS_PER_SCRAPE
+    limit_label = "trial"
     if access_state["has_active_subscription"] and active_subscription:
         max_results_allowed = get_max_results_for_tier(active_subscription.tier)
-        if payload.max_results > max_results_allowed:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"Your {active_subscription.tier.value} plan allows up to "
-                    f"{max_results_allowed} results per scrape."
-                ),
-            )
+        limit_label = active_subscription.tier.value
+
+    if payload.max_results > max_results_allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Your {limit_label} plan allows up to {max_results_allowed} results per scrape. "
+                "Upgrade to a higher plan to scrape more."
+            ),
+        )
 
     try:
         results = await run_in_threadpool(run_scrape, data)
@@ -816,19 +818,14 @@ def get_pricing():
 
 @app.get("/api/payment/config")
 def get_payment_config():
-    publishable_key = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
-    paypal_client_id = os.getenv("PAYPAL_CLIENT_ID", "").strip()
-    paypal_client_secret = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
-    paypal_currency = os.getenv("PAYPAL_CURRENCY", "USD").strip() or "USD"
-    paypal_environment = os.getenv("PAYPAL_ENVIRONMENT", "sandbox").strip() or "sandbox"
     return {
-        "publishable_key": publishable_key,
-        "payments_enabled": bool(publishable_key and not publishable_key.endswith("placeholder")),
-        "paypal_enabled": bool(paypal_client_id and paypal_client_secret),
-        "paypal_client_id": paypal_client_id,
-        "paypal_currency": paypal_currency,
-        "paypal_environment": paypal_environment,
-        "paypal_sdk_base": "https://www.paypal.com/sdk/js",
+        "publishable_key": "",
+        "payments_enabled": False,
+        "paypal_enabled": False,
+        "paypal_client_id": "",
+        "paypal_currency": "USD",
+        "paypal_environment": "sandbox",
+        "paypal_sdk_base": "",
         "trial_days": 15,
     }
 
@@ -839,15 +836,7 @@ def create_payment_session(
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db)
 ):
-    """Create a Stripe checkout session for purchasing credits."""
-    require_current_user_email_if_authenticated(current_user, request.email)
-    try:
-        result = create_checkout_session(db, request)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Payment error: {str(e)}")
+    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
 
 
 @app.post("/api/subscription/create-checkout-session")
@@ -856,15 +845,7 @@ def create_subscription_session(
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db)
 ):
-    """Create a subscription checkout session."""
-    require_current_user_email_if_authenticated(current_user, request.email)
-    try:
-        result = create_subscription_checkout_session(db, request)
-        return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Subscription error: {str(e)}")
+    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
 
 
 @app.post("/api/paypal/orders")
@@ -873,46 +854,17 @@ def create_paypal_order(
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db),
 ):
-    require_current_user_email_if_authenticated(current_user, request.email)
-    try:
-        return create_paypal_subscription_order(db, request)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PayPal order error: {str(e)}")
+    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
 
 
 @app.post("/api/paypal/orders/{order_id}/capture")
 def capture_paypal_order(order_id: str, current_user=Depends(get_optional_platform_user), db: Session = Depends(get_db)):
-    try:
-        return capture_paypal_subscription_order(db, order_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"PayPal capture error: {str(e)}")
+    raise HTTPException(status_code=503, detail="Payment integration is disabled for now. Contact the admin to upgrade your account.")
 
 
 @app.post("/api/webhook", include_in_schema=False)
 async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
-    """Handle Stripe webhook events."""
-    payload = await request.body()
-    sig_header = request.headers.get("stripe-signature")
-    
-    webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
-    
-    try:
-        event = stripe.Webhook.construct_event(
-            payload, sig_header, webhook_secret
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError as e:
-        raise HTTPException(status_code=400, detail="Invalid signature")
-    
-    # Handle the event
-    handle_webhook_event(event["type"], event["data"])
-    
-    return JSONResponse(content={"received": True}, status_code=200)
+    raise HTTPException(status_code=503, detail="Payment integration is disabled for now.")
 
 
 @app.get("/api/user/credits/{email}")
