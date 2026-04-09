@@ -211,6 +211,10 @@ def ensure_scrape_run_columns() -> None:
     existing_columns = {column["name"] for column in inspector.get_columns("scrape_runs")}
     statements: list[str] = []
 
+    if "processed_results" not in existing_columns:
+        statements.append("ALTER TABLE scrape_runs ADD COLUMN processed_results INTEGER DEFAULT 0")
+    if "progress_message" not in existing_columns:
+        statements.append("ALTER TABLE scrape_runs ADD COLUMN progress_message TEXT")
     if "error_message" not in existing_columns:
         statements.append("ALTER TABLE scrape_runs ADD COLUMN error_message TEXT")
 
@@ -220,6 +224,8 @@ def ensure_scrape_run_columns() -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+        if "processed_results" not in existing_columns:
+            connection.execute(text("UPDATE scrape_runs SET processed_results = COALESCE(total_results, 0) WHERE processed_results IS NULL"))
 
 
 def _normalize_run_datetime(value):

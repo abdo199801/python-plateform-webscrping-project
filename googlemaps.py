@@ -1067,7 +1067,7 @@ class UniversalGoogleMapsScraper:
 
         return info
 
-    def scrape(self, keyword: str, location: str = "", radius: str = "10000", max_results: int = None):
+    def scrape(self, keyword: str, location: str = "", radius: str = "10000", max_results: int = None, progress_callback=None):
         """Main scraping function with worldwide capability"""
         if max_results:
             self.max_results = max_results
@@ -1091,6 +1091,8 @@ class UniversalGoogleMapsScraper:
         logger.info(f"   State/Province: {location_info['state_province'] or 'Not specified'}")
         logger.info(f"   Specific: {location_info['specific_location'] or 'Not specified'}")
         logger.info(f"🔗 URL: {url}")
+        if progress_callback:
+            progress_callback(0, f"Opening Google Maps for {keyword} {location}".strip())
 
         # Navigate
         self._open_search_page(url)
@@ -1136,6 +1138,8 @@ class UniversalGoogleMapsScraper:
                                               "//*[contains(@class, 'section-result') or contains(@class, 'place-card')]")
 
         logger.info(f"📍 Total businesses found: {len(cards)}")
+        if progress_callback:
+            progress_callback(0, f"Found {len(cards)} map results. Opening business cards...")
 
         # Scrape each business
         results = []
@@ -1144,11 +1148,18 @@ class UniversalGoogleMapsScraper:
                 current_cards = self._get_business_cards()
                 if i >= len(current_cards):
                     break
+                if progress_callback:
+                    progress_callback(len(results), f"Opening card {i + 1} of {min(len(cards), self.max_results)}...")
                 business_data = self.scrape_business_card(current_cards[i], i + 1, location_info)
                 if business_data:
                     results.append(business_data)
                     logger.info(
                         f"✅ ({i + 1}/{min(len(cards), self.max_results)}) Success: {business_data.get('name', 'Unknown')}")
+                    if progress_callback:
+                        progress_callback(
+                            len(results),
+                            f"Downloaded {len(results)} of {self.max_results} businesses. Last: {business_data.get('name', 'Unknown')}",
+                        )
 
                 # Save progress periodically
                 if (i + 1) % 10 == 0 and results:
@@ -1168,6 +1179,8 @@ class UniversalGoogleMapsScraper:
             pass
 
         logger.info(f"🎉 Scraping complete! Extracted {len(results)} businesses")
+        if progress_callback:
+            progress_callback(len(results), f"Scrape completed with {len(results)} businesses.")
 
         return results
 

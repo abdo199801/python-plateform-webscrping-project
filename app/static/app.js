@@ -233,6 +233,11 @@ function getRunProgressMeta(run) {
 
   const timing = getRunTiming(run);
   const statusLabel = status === "running" ? "Running" : "Queued";
+  const processedResults = Number(run.processed_results || 0);
+  const requestedResults = Math.max(1, Number(run.max_results || 0));
+  const progressPercent = status === "queued"
+    ? 0
+    : Math.max(2, Math.min(100, Math.round((processedResults / requestedResults) * 100)));
   const etaLabel = status === "queued"
     ? "Estimated time left: waiting for an available scraper slot"
     : timing.remainingSeconds > 0
@@ -242,8 +247,11 @@ function getRunProgressMeta(run) {
   return {
     statusLabel,
     targetLabel: `Target: up to ${formatNumber(run.max_results)} businesses`,
+    downloadedLabel: `Downloaded: ${formatNumber(processedResults)} of ${formatNumber(run.max_results)} businesses`,
     timerLabel: `Elapsed: ${formatDuration(timing.elapsedSeconds)}`,
     etaLabel,
+    progressPercent,
+    progressMessage: run.progress_message || (status === "queued" ? "Waiting in queue..." : "Collecting businesses from Google Maps..."),
   };
 }
 
@@ -262,6 +270,8 @@ function refreshRunTimers() {
       status,
       created_at: card.dataset.createdAt,
       max_results: Number(card.dataset.maxResults || 0),
+      processed_results: Number(card.dataset.processedResults || 0),
+      progress_message: card.dataset.progressMessage || "",
     };
     const meta = getRunProgressMeta(run);
     if (!meta) {
@@ -275,6 +285,18 @@ function refreshRunTimers() {
     }
     if (etaEl) {
       etaEl.textContent = meta.etaLabel;
+    }
+    const progressFillEl = card.querySelector("[data-role='run-progress-fill']");
+    const downloadedEl = card.querySelector("[data-role='run-downloaded']");
+    const messageEl = card.querySelector("[data-role='run-progress-message']");
+    if (progressFillEl) {
+      progressFillEl.style.width = `${meta.progressPercent}%`;
+    }
+    if (downloadedEl) {
+      downloadedEl.textContent = meta.downloadedLabel;
+    }
+    if (messageEl) {
+      messageEl.textContent = meta.progressMessage;
     }
   });
 
@@ -891,13 +913,16 @@ function renderRuns(runs, pagination) {
         : `${formatNumber(run.total_results)} saved businesses`;
 
       return `
-        <article class="run-card" data-run-status="${escapeHtml(runStatus)}" data-created-at="${escapeHtml(run.created_at)}" data-max-results="${escapeHtml(String(run.max_results))}">
+        <article class="run-card" data-run-status="${escapeHtml(runStatus)}" data-created-at="${escapeHtml(run.created_at)}" data-max-results="${escapeHtml(String(run.max_results))}" data-processed-results="${escapeHtml(String(run.processed_results || 0))}" data-progress-message="${escapeHtml(run.progress_message || "")}">
           <h3>${escapeHtml(run.keyword)}</h3>
           <p>${escapeHtml(run.location || "Worldwide")}</p>
           <p class="meta">${resultsLine}</p>
           <p class="meta">Radius: ${escapeHtml(run.radius)} | Max: ${run.max_results}</p>
           <p class="meta">Mode: ${run.headless ? "Background browser" : "Standard browser"}</p>
           <p class="meta">Status: ${escapeHtml((run.status || "queued").toUpperCase())}</p>
+          ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-downloaded">${escapeHtml(progressMeta.downloadedLabel)}</p>` : ""}
+          ${progressMeta ? `<div class="run-progress-bar"><span class="run-progress-bar-fill" data-role="run-progress-fill" style="width: ${progressMeta.progressPercent}%"></span></div>` : ""}
+          ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-progress-message">${escapeHtml(progressMeta.progressMessage)}</p>` : ""}
           ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-timer">${escapeHtml(progressMeta.timerLabel)}</p>` : ""}
           ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-eta">${escapeHtml(progressMeta.etaLabel)}</p>` : ""}
           ${run.error_message ? `<p class="meta">Reason: ${escapeHtml(run.error_message)}</p>` : ""}

@@ -58,8 +58,10 @@ class ScrapeRunResponse(BaseModel):
     radius: str
     max_results: int
     headless: bool
+    processed_results: int = 0
     total_results: int
     status: str
+    progress_message: Optional[str] = None
     error_message: Optional[str] = None
     created_at: datetime
     businesses: List[BusinessResponse] = []

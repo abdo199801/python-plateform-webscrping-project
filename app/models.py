@@ -13,8 +13,10 @@ class ScrapeRun(Base):
     radius = Column(String(50), nullable=False, default="10000")
     max_results = Column(Integer, nullable=False, default=100)
     headless = Column(Boolean, nullable=False, default=False)
+    processed_results = Column(Integer, nullable=False, default=0)
     total_results = Column(Integer, nullable=False, default=0)
     status = Column(String(50), nullable=False, default="completed", index=True)
+    progress_message = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
