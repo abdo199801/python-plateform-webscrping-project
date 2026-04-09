@@ -60,6 +60,7 @@ class ScrapeRunResponse(BaseModel):
     headless: bool
     total_results: int
     status: str
+    error_message: Optional[str] = None
     created_at: datetime
     businesses: List[BusinessResponse] = []
 

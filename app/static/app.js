@@ -227,11 +227,17 @@ function getRunProgressMeta(run) {
 
   const timing = getRunTiming(run);
   const statusLabel = status === "running" ? "Running" : "Queued";
+  const etaLabel = status === "queued"
+    ? "Estimated time left: waiting for an available scraper slot"
+    : timing.remainingSeconds > 0
+      ? `Estimated time left: ${formatDuration(timing.remainingSeconds)}`
+      : "Estimated time left: finishing up";
+
   return {
     statusLabel,
     targetLabel: `Target: up to ${formatNumber(run.max_results)} businesses`,
     timerLabel: `Elapsed: ${formatDuration(timing.elapsedSeconds)}`,
-    etaLabel: `Estimated time left: ${formatDuration(timing.remainingSeconds)}`,
+    etaLabel,
   };
 }
 
@@ -294,15 +300,16 @@ function updateRunNotifications(runs) {
       return;
     }
 
-    if (previousStatus === "queued" && run.status === "completed") {
+    if (["queued", "running"].includes(previousStatus) && run.status === "completed") {
       const message = `${run.keyword} finished with ${formatNumber(run.total_results)} saved businesses.`;
       setStatus(message);
       showBrowserNotification("Scrape completed", message);
       return;
     }
 
-    if (previousStatus === "queued" && run.status === "failed") {
-      const message = `${run.keyword} failed during scraping. Refresh runs for the latest status.`;
+    if (["queued", "running"].includes(previousStatus) && run.status === "failed") {
+      const reason = run.error_message || "Refresh runs for the latest status.";
+      const message = `${run.keyword} failed during scraping. ${reason}`;
       setStatus(message, true);
       showBrowserNotification("Scrape failed", message);
     }
@@ -789,6 +796,7 @@ function renderRuns(runs, pagination) {
           <p class="meta">Status: ${escapeHtml((run.status || "queued").toUpperCase())}</p>
           ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-timer">${escapeHtml(progressMeta.timerLabel)}</p>` : ""}
           ${progressMeta ? `<p class="meta run-progress-meta" data-role="run-eta">${escapeHtml(progressMeta.etaLabel)}</p>` : ""}
+          ${run.error_message ? `<p class="meta">Reason: ${escapeHtml(run.error_message)}</p>` : ""}
           <p class="meta">${formatDate(run.created_at)}</p>
           <div class="run-actions">
             ${run.status === "completed" ? buildExportButtons(run.id) : ""}

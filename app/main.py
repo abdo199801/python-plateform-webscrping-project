@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -201,6 +202,67 @@ def ensure_platform_user_auth_columns() -> None:
             connection.execute(text("UPDATE platform_users SET is_active = TRUE WHERE is_active IS NULL"))
 
 
+def ensure_scrape_run_columns() -> None:
+    inspector = inspect(engine)
+    if "scrape_runs" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("scrape_runs")}
+    statements: list[str] = []
+
+    if "error_message" not in existing_columns:
+        statements.append("ALTER TABLE scrape_runs ADD COLUMN error_message TEXT")
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _normalize_run_datetime(value):
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def recover_abandoned_scrape_runs() -> None:
+    stale_after_seconds = max(
+        300,
+        int(os.getenv("SCRAPE_JOB_STALE_SECONDS", str(int(os.getenv("SCRAPE_JOB_TIMEOUT_SECONDS", "900")) + 300))),
+    )
+    stale_before = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+
+    db = SessionLocal()
+    try:
+        stale_runs = (
+            db.query(ScrapeRun)
+            .filter(ScrapeRun.status.in_(["queued", "running"]))
+            .all()
+        )
+
+        updated = False
+        for run in stale_runs:
+            created_at = _normalize_run_datetime(run.created_at)
+            if created_at and created_at <= stale_before:
+                run.status = "failed"
+                run.error_message = "The scrape job timed out or the worker restarted before it finished."
+                updated = True
+
+        if updated:
+            db.commit()
+        else:
+            db.rollback()
+    except Exception as exc:
+        db.rollback()
+        print(f"Scrape recovery error: {exc}")
+    finally:
+        db.close()
+
+
 def get_current_platform_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(user_security),
     db: Session = Depends(get_db),
@@ -309,11 +371,13 @@ def startup():
     try:
         Base.metadata.create_all(bind=engine)
         ensure_platform_user_auth_columns()
+        ensure_scrape_run_columns()
         # Test the connection
         db = next(get_db())
         db.execute(text("SELECT 1"))
         db.close()
         bootstrap_admin_user()
+        recover_abandoned_scrape_runs()
         app.state.db_ready = True
         print("Database initialized successfully!")
     except Exception as e:

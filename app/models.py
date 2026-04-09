@@ -15,6 +15,7 @@ class ScrapeRun(Base):
     headless = Column(Boolean, nullable=False, default=False)
     total_results = Column(Integer, nullable=False, default=0)
     status = Column(String(50), nullable=False, default="completed", index=True)
+    error_message = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     businesses = relationship(
