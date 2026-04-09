@@ -1,15 +1,19 @@
+import json
+import os
 from pathlib import Path
 from typing import Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, or_, text
 from starlette.concurrency import run_in_threadpool
 
-from app.database import Base, engine, get_db
+from app.admin_models import AdminUser
+from app.auth_service import get_admin_by_email, hash_password
+from app.database import Base, SessionLocal, engine, get_db
 from app.export_service import export_run_file
 from app.models import Business, ScrapeRun
 from app.schemas import (
@@ -39,10 +43,12 @@ from app.payment_schemas import (
 )
 from app.payment_service import (
     cancel_subscription_for_user,
+    capture_paypal_subscription_order,
     get_platform_user,
     get_pricing_plans,
     get_credit_packages,
     create_checkout_session,
+    create_paypal_subscription_order,
     create_subscription_checkout_session,
     get_user_dashboard,
     get_max_results_for_tier,
@@ -57,8 +63,90 @@ from app.payment_service import (
 )
 from app.admin_routes import router as admin_router
 
-import os
 import stripe
+
+
+def get_runtime_config() -> dict[str, str]:
+    return {
+        "apiBaseUrl": os.getenv("API_BASE_URL", "").strip().rstrip("/"),
+        "frontendUrl": os.getenv("FRONTEND_URL", "").strip().rstrip("/"),
+    }
+
+
+def get_allowed_origins() -> list[str]:
+    origins: list[str] = []
+    configured_origins = os.getenv("ALLOWED_ORIGINS", "")
+    frontend_url = os.getenv("FRONTEND_URL", "").strip().rstrip("/")
+    local_defaults = [
+        "http://localhost:8000",
+        "http://127.0.0.1:8000",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+    ]
+
+    def add_origin(value: str) -> None:
+        cleaned = value.strip().rstrip("/")
+        if cleaned and cleaned not in origins:
+            origins.append(cleaned)
+
+    if configured_origins:
+        for origin in configured_origins.split(","):
+            add_origin(origin)
+
+    if frontend_url:
+        add_origin(frontend_url)
+
+    for origin in local_defaults:
+        add_origin(origin)
+
+    if "*" in origins:
+        return ["*"]
+
+    return origins
+
+
+def bootstrap_admin_user() -> None:
+    admin_email = os.getenv("ADMIN_EMAIL", "").strip()
+    admin_password = os.getenv("ADMIN_PASSWORD", "").strip()
+    if not admin_email or not admin_password:
+        return
+
+    full_name = os.getenv("ADMIN_FULL_NAME", "Platform Administrator").strip() or "Platform Administrator"
+    is_superuser = os.getenv("ADMIN_IS_SUPERUSER", "true").strip().lower() not in {"0", "false", "no"}
+
+    db = SessionLocal()
+    try:
+        existing_admin = get_admin_by_email(db, admin_email)
+        if existing_admin:
+            return
+
+        admin = AdminUser(
+            email=admin_email,
+            hashed_password=hash_password(admin_password),
+            full_name=full_name,
+            is_superuser=is_superuser,
+            is_active=True,
+            can_manage_users=True,
+            can_view_scrapes=True,
+            can_run_scrapes=True,
+            can_manage_payments=is_superuser,
+            can_view_analytics=True,
+            can_manage_admins=is_superuser,
+        )
+        db.add(admin)
+        db.commit()
+        print(f"Bootstrapped admin user: {admin_email}")
+    except Exception as exc:
+        db.rollback()
+        print(f"Admin bootstrap error: {exc}")
+    finally:
+        db.close()
+
+
+ALLOWED_ORIGINS = get_allowed_origins()
+ALLOW_CREDENTIALS = ALLOWED_ORIGINS != ["*"]
 
 app = FastAPI(title="Google Maps Scraper Fullstack API", version="2.0.0")
 
@@ -67,8 +155,8 @@ app.include_router(admin_router)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -85,6 +173,7 @@ def startup():
         db = next(get_db())
         db.execute(text("SELECT 1"))
         db.close()
+        bootstrap_admin_user()
         app.state.db_ready = True
         print("Database initialized successfully!")
     except Exception as e:
@@ -108,6 +197,12 @@ def admin_dashboard():
 def admin_login_page():
     """Dedicated admin login entry point."""
     return FileResponse(STATIC_DIR / "admin.html")
+
+
+@app.get("/config.js", include_in_schema=False)
+def frontend_config():
+    config_script = "window.APP_CONFIG = Object.freeze(" + json.dumps(get_runtime_config()) + ");"
+    return Response(content=config_script, media_type="application/javascript")
 
 
 # Mount static files after defining routes to avoid catching /admin
@@ -394,12 +489,18 @@ def get_pricing():
 @app.get("/api/payment/config")
 def get_payment_config():
     publishable_key = os.getenv("STRIPE_PUBLISHABLE_KEY", "")
-    paypal_url = os.getenv("PAYPAL_SUBSCRIPTION_URL", "").strip()
+    paypal_client_id = os.getenv("PAYPAL_CLIENT_ID", "").strip()
+    paypal_client_secret = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
+    paypal_currency = os.getenv("PAYPAL_CURRENCY", "USD").strip() or "USD"
+    paypal_environment = os.getenv("PAYPAL_ENVIRONMENT", "sandbox").strip() or "sandbox"
     return {
         "publishable_key": publishable_key,
         "payments_enabled": bool(publishable_key and not publishable_key.endswith("placeholder")),
-        "paypal_enabled": bool(paypal_url),
-        "paypal_subscription_url": paypal_url,
+        "paypal_enabled": bool(paypal_client_id and paypal_client_secret),
+        "paypal_client_id": paypal_client_id,
+        "paypal_currency": paypal_currency,
+        "paypal_environment": paypal_environment,
+        "paypal_sdk_base": "https://www.paypal.com/sdk/js",
         "trial_days": 15,
     }
 
@@ -432,6 +533,29 @@ def create_subscription_session(
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Subscription error: {str(e)}")
+
+
+@app.post("/api/paypal/orders")
+def create_paypal_order(
+    request: CreateSubscriptionCheckoutRequest,
+    db: Session = Depends(get_db),
+):
+    try:
+        return create_paypal_subscription_order(db, request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PayPal order error: {str(e)}")
+
+
+@app.post("/api/paypal/orders/{order_id}/capture")
+def capture_paypal_order(order_id: str, db: Session = Depends(get_db)):
+    try:
+        return capture_paypal_subscription_order(db, order_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PayPal capture error: {str(e)}")
 
 
 @app.post("/api/webhook", include_in_schema=False)

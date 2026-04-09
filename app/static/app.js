@@ -32,13 +32,31 @@ const dashboardCancelSubscriptionEl = document.getElementById("dashboardCancelSu
 const dashboardEditProfileEl = document.getElementById("dashboardEditProfile");
 const scrapeButtonEl = document.getElementById("scrapeBtn");
 const saveProfileButtonEl = document.getElementById("saveProfileBtn");
+const appConfig = window.APP_CONFIG || {};
+const apiBaseUrl = (appConfig.apiBaseUrl || "").replace(/\/+$/, "");
+const nativeFetch = window.fetch.bind(window);
+
+function resolveApiUrl(input) {
+  if (typeof input !== "string" || !input.startsWith("/") || !apiBaseUrl) {
+    return input;
+  }
+
+  return `${apiBaseUrl}${input}`;
+}
+
+window.fetch = (input, init) => nativeFetch(resolveApiUrl(input), init);
 
 let userEmail = localStorage.getItem("userEmail") || "";
 let stripe = null;
+let paypalSdkReady = false;
 let paymentConfig = {
   payments_enabled: false,
   paypal_enabled: false,
   publishable_key: "",
+  paypal_client_id: "",
+  paypal_currency: "USD",
+  paypal_environment: "sandbox",
+  paypal_sdk_base: "https://www.paypal.com/sdk/js",
   trial_days: 15,
 };
 let accessState = null;
@@ -46,6 +64,150 @@ const runListState = { page: 1, pageSize: 6 };
 const businessListState = { page: 1, pageSize: 10 };
 let latestRunId = null;
 let dashboardState = null;
+
+function buildPayPalSdkUrl() {
+  const params = new URLSearchParams({
+    "client-id": paymentConfig.paypal_client_id,
+    currency: paymentConfig.paypal_currency || "USD",
+    components: "buttons",
+    intent: "capture",
+  });
+
+  return `${paymentConfig.paypal_sdk_base || "https://www.paypal.com/sdk/js"}?${params.toString()}`;
+}
+
+function loadScript(src, dataset = {}) {
+  return new Promise((resolve, reject) => {
+    const existing = document.querySelector(`script[src="${src}"]`);
+    if (existing) {
+      if (existing.dataset.loaded === "true") {
+        resolve();
+        return;
+      }
+      existing.addEventListener("load", () => resolve(), { once: true });
+      existing.addEventListener("error", () => reject(new Error(`Failed to load script: ${src}`)), { once: true });
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = src;
+    Object.entries(dataset).forEach(([key, value]) => {
+      script.dataset[key] = value;
+    });
+    script.addEventListener("load", () => {
+      script.dataset.loaded = "true";
+      resolve();
+    }, { once: true });
+    script.addEventListener("error", () => reject(new Error(`Failed to load script: ${src}`)), { once: true });
+    document.head.appendChild(script);
+  });
+}
+
+async function loadPayPalSdk() {
+  if (!paymentConfig.paypal_enabled) {
+    paypalSdkReady = false;
+    return;
+  }
+
+  await loadScript(buildPayPalSdkUrl(), { sdkIntegrationSource: "mapsscraper-pro" });
+  paypalSdkReady = Boolean(window.paypal && typeof window.paypal.Buttons === "function");
+}
+
+async function createPayPalOrder(tier) {
+  const saved = await saveProfile();
+  if (!saved) {
+    throw new Error("Save the profile first so the platform can link the PayPal order to your account.");
+  }
+
+  const response = await fetch("/api/paypal/orders", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      email: userEmail,
+      tier,
+      provider: "paypal",
+    }),
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    const errorDetail = data?.details?.[0];
+    const errorMessage = errorDetail
+      ? `${errorDetail.issue} ${errorDetail.description} (${data.debug_id || "paypal"})`
+      : data.detail || "Could not initiate PayPal checkout.";
+    throw new Error(errorMessage);
+  }
+
+  return data.id;
+}
+
+async function capturePayPalOrder(orderId) {
+  const response = await fetch(`/api/paypal/orders/${encodeURIComponent(orderId)}/capture`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+  const data = await response.json();
+  if (!response.ok) {
+    const errorDetail = data?.details?.[0];
+    const errorMessage = errorDetail
+      ? `${errorDetail.description} (${data.debug_id || "paypal"})`
+      : data.detail || "PayPal capture failed.";
+    throw new Error(errorMessage);
+  }
+  return data;
+}
+
+function renderPayPalButtons(plans) {
+  if (!paymentConfig.paypal_enabled || !paypalSdkReady || !window.paypal) {
+    return;
+  }
+
+  plans
+    .filter((plan) => plan.tier !== "free")
+    .forEach((plan) => {
+      const container = document.getElementById(`paypal-button-${plan.tier}`);
+      if (!container) {
+        return;
+      }
+
+      container.innerHTML = "";
+      window.paypal.Buttons({
+        style: {
+          shape: "rect",
+          layout: "vertical",
+          color: "gold",
+          label: "paypal",
+        },
+        async createOrder() {
+          return createPayPalOrder(plan.tier);
+        },
+        async onApprove(data, actions) {
+          try {
+            const orderData = await capturePayPalOrder(data.orderID);
+            const errorDetail = orderData?.details?.[0];
+
+            if (errorDetail?.issue === "INSTRUMENT_DECLINED") {
+              return actions.restart();
+            }
+            if (errorDetail) {
+              throw new Error(`${errorDetail.description} (${orderData.debug_id || "paypal"})`);
+            }
+
+            setStatus(`PayPal payment completed for the ${plan.name} plan. Subscription access is now active.`);
+            await Promise.all([loadAccessStatus(), loadUserDashboard()]);
+          } catch (error) {
+            setStatus(error.message, true);
+          }
+        },
+        onError(error) {
+          setStatus(error.message || "PayPal checkout failed.", true);
+        },
+        onCancel() {
+          setStatus("PayPal checkout was cancelled.", true);
+        },
+      }).render(container);
+    });
+}
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message;
@@ -424,8 +586,8 @@ function renderPricingPlans(plans) {
           </ul>
           <div class="pricing-actions-row">
             <button type="button" data-tier="${escapeHtml(plan.tier)}" data-provider="card" ${paymentConfig.payments_enabled ? "" : "disabled"}>Pay by Card</button>
-            <button type="button" class="secondary" data-tier="${escapeHtml(plan.tier)}" data-provider="paypal" ${paymentConfig.paypal_enabled ? "" : "disabled"}>PayPal</button>
           </div>
+          <div id="paypal-button-${escapeHtml(plan.tier)}" class="paypal-button-slot"></div>
         </div>
       `;
     })
@@ -442,6 +604,8 @@ function renderPricingPlans(plans) {
       await subscribeToPlan(button.dataset.tier, button.dataset.provider);
     });
   });
+
+  renderPayPalButtons(plans);
 }
 
 function renderInsights(insights) {
@@ -510,10 +674,14 @@ async function loadPaymentConfig() {
     ? window.Stripe(paymentConfig.publishable_key)
     : null;
 
+  if (paymentConfig.paypal_enabled) {
+    await loadPayPalSdk();
+  }
+
   if (paymentConfig.payments_enabled && paymentConfig.paypal_enabled) {
     setPaymentBanner("Subscriptions are available by card and PayPal.", "success");
   } else if (paymentConfig.payments_enabled) {
-    setPaymentBanner("Card checkout is ready. Add PAYPAL_SUBSCRIPTION_URL to enable PayPal too.", "warning");
+    setPaymentBanner("Card checkout is ready. Add PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET to enable PayPal too.", "warning");
   } else if (paymentConfig.paypal_enabled) {
     setPaymentBanner("PayPal is ready. Add STRIPE_PUBLISHABLE_KEY to enable card checkout too.", "warning");
   } else {
@@ -675,6 +843,11 @@ async function subscribeToPlan(tier, provider) {
     return;
   }
 
+  if (provider === "paypal") {
+    setStatus("Use the PayPal button for the selected plan to complete checkout.", true);
+    return;
+  }
+
   try {
     const response = await fetch("/api/subscription/create-checkout-session", {
       method: "POST",
@@ -697,9 +870,6 @@ async function subscribeToPlan(tier, provider) {
       }
       return;
     }
-
-    setStatus("Redirecting to PayPal. Once payment is confirmed, an admin can activate the subscription immediately.");
-    window.location.href = data.url;
   } catch (error) {
     setStatus(error.message, true);
   }
@@ -821,14 +991,17 @@ if (userEmail) {
 renderBusinessExportToolbar();
 renderDashboardEmpty("Save your company profile to unlock the personal dashboard and self-service subscription controls.");
 
-Promise.all([loadPaymentConfig(), loadPricing(), loadRuns(), loadBusinesses(), loadInsights()])
-  .then(async () => {
+(async () => {
+  try {
+    await loadPaymentConfig();
+    await Promise.all([loadPricing(), loadRuns(), loadBusinesses(), loadInsights()]);
+
     if (userEmail) {
       await Promise.all([loadAccessStatus(), loadUserDashboard()]);
     } else {
       updateAccessDisplay();
     }
-  })
-  .catch((error) => {
+  } catch (error) {
     setStatus(error.message, true);
-  });
+  }
+})();

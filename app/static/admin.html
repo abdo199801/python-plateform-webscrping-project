@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Admin Dashboard - MapsScraper Pro</title>
   <link rel="stylesheet" href="/static/styles.css">
+  <script src="/config.js"></script>
   <style>
     .admin-layout { display: flex; min-height: 100vh; }
     .admin-sidebar { width: 260px; background: #1a1a2e; color: #fff; padding: 20px 0; position: fixed; height: 100vh; overflow-y: auto; }
@@ -241,6 +242,20 @@
   </div>
 
   <script>
+    const appConfig = window.APP_CONFIG || {};
+    const apiBaseUrl = (appConfig.apiBaseUrl || '').replace(/\/+$/, '');
+    const nativeFetch = window.fetch.bind(window);
+
+    function resolveApiUrl(input) {
+      if (typeof input !== 'string' || !input.startsWith('/') || !apiBaseUrl) {
+        return input;
+      }
+
+      return `${apiBaseUrl}${input}`;
+    }
+
+    window.fetch = (input, init) => nativeFetch(resolveApiUrl(input), init);
+
     let authToken = localStorage.getItem('adminToken') || '';
     let currentAdmin = null;
 

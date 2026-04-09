@@ -1,7 +1,10 @@
 import os
 import stripe
+import base64
+import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
+from urllib import error, parse, request as urlrequest
 from sqlalchemy.orm import Session
 
 from app.payment_models import (
@@ -90,6 +93,81 @@ CREDIT_PACKAGES = [
     {"credits": 50, "price": 90, "bonus": 15},
     {"credits": 100, "price": 150, "bonus": 30},
 ]
+
+
+def get_frontend_url() -> str:
+    return os.getenv("FRONTEND_URL", "http://localhost:8000").strip().rstrip("/")
+
+
+def get_paypal_api_base() -> str:
+    environment = os.getenv("PAYPAL_ENVIRONMENT", "sandbox").strip().lower()
+    if environment == "live":
+        return "https://api-m.paypal.com"
+    return "https://api-m.sandbox.paypal.com"
+
+
+def get_paypal_access_token() -> str:
+    client_id = os.getenv("PAYPAL_CLIENT_ID", "").strip()
+    client_secret = os.getenv("PAYPAL_CLIENT_SECRET", "").strip()
+    if not client_id or not client_secret:
+        raise ValueError("PayPal is not configured yet. Add PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET.")
+
+    auth_header = base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii")
+    body = parse.urlencode({"grant_type": "client_credentials"}).encode("utf-8")
+    token_request = urlrequest.Request(
+        url=f"{get_paypal_api_base()}/v1/oauth2/token",
+        data=body,
+        headers={
+            "Authorization": f"Basic {auth_header}",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    try:
+        with urlrequest.urlopen(token_request, timeout=30) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"PayPal token request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise ValueError(f"PayPal connection failed: {exc.reason}") from exc
+
+    access_token = payload.get("access_token")
+    if not access_token:
+        raise ValueError("PayPal token response did not include an access token.")
+
+    return access_token
+
+
+def paypal_api_request(path: str, method: str = "GET", payload: Optional[dict] = None) -> dict:
+    access_token = get_paypal_access_token()
+    request_data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    paypal_request = urlrequest.Request(
+        url=f"{get_paypal_api_base()}{path}",
+        data=request_data,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method=method,
+    )
+
+    try:
+        with urlrequest.urlopen(paypal_request, timeout=30) as response:
+            raw_payload = response.read().decode("utf-8")
+            return json.loads(raw_payload) if raw_payload else {}
+    except error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise ValueError(f"PayPal API request failed: {detail}") from exc
+    except error.URLError as exc:
+        raise ValueError(f"PayPal connection failed: {exc.reason}") from exc
+
+
+def get_pricing_plan_by_tier(tier: SubscriptionTier) -> Optional[Dict[str, Any]]:
+    return next((plan for plan in PRICING_PLANS if plan["tier"] == tier.value), None)
 
 
 def get_pricing_plans() -> List[Dict[str, Any]]:
@@ -267,7 +345,7 @@ def create_subscription_checkout_session(
         tier = request.tier.value
 
         # Find the plan
-        plan = next((p for p in PRICING_PLANS if p["tier"] == tier), None)
+        plan = get_pricing_plan_by_tier(request.tier)
         if not plan or plan["price"] == 0:
             raise ValueError(f"Invalid subscription tier: {tier}")
         if request.tier not in SCRAPE_ALLOWED_TIERS:
@@ -283,8 +361,8 @@ def create_subscription_checkout_session(
         db.commit()
         db.refresh(subscription)
 
-        success_url = request.success_url or f"{os.getenv('FRONTEND_URL', 'http://localhost:8000')}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}"
-        cancel_url = request.cancel_url or f"{os.getenv('FRONTEND_URL', 'http://localhost:8000')}/subscription/cancel"
+        success_url = request.success_url or f"{get_frontend_url()}/subscription/success?session_id={{CHECKOUT_SESSION_ID}}"
+        cancel_url = request.cancel_url or f"{get_frontend_url()}/subscription/cancel"
 
         user = get_platform_user(db, email)
         if user:
@@ -292,18 +370,7 @@ def create_subscription_checkout_session(
             db.commit()
 
         if request.provider == PaymentProvider.PAYPAL:
-            paypal_url = os.getenv("PAYPAL_SUBSCRIPTION_URL", "").strip()
-            if not paypal_url:
-                raise ValueError("PayPal checkout is not configured yet. Add PAYPAL_SUBSCRIPTION_URL to enable it.")
-
-            subscription.stripe_subscription_id = f"paypal-pending-{subscription.id}"
-            db.commit()
-            return {
-                "session_id": f"paypal-pending-{subscription.id}",
-                "url": paypal_url,
-                "provider": request.provider.value,
-                "requires_manual_activation": "true",
-            }
+            raise ValueError("Use the PayPal button to create and capture a PayPal order.")
 
         session = stripe.checkout.Session.create(
             payment_method_types=["card"],
@@ -346,6 +413,155 @@ def create_subscription_checkout_session(
     except Exception as e:
         db.rollback()
         raise e
+
+
+def create_paypal_subscription_order(
+    db: Session,
+    request: CreateSubscriptionCheckoutRequest,
+) -> Dict[str, Any]:
+    if request.provider != PaymentProvider.PAYPAL:
+        raise ValueError("PayPal order creation requires provider=paypal.")
+
+    plan = get_pricing_plan_by_tier(request.tier)
+    if not plan or plan["price"] == 0:
+        raise ValueError(f"Invalid subscription tier: {request.tier.value}")
+    if request.tier not in SCRAPE_ALLOWED_TIERS:
+        raise ValueError("Only Professional or Enterprise plans unlock scraping after the trial.")
+
+    user = get_platform_user(db, request.email)
+    if user is None:
+        raise ValueError("Please save the company profile before starting PayPal checkout.")
+
+    user.preferred_payment_provider = PaymentProvider.PAYPAL
+
+    subscription = Subscription(
+        user_email=request.email,
+        tier=request.tier,
+        is_active=False,
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+
+    payment = Payment(
+        user_email=request.email,
+        amount=plan["price"],
+        currency="USD",
+        status=PaymentStatus.PENDING,
+        description=f"{plan['name']} subscription via PayPal",
+        payment_metadata={
+            "tier": request.tier.value,
+            "provider": PaymentProvider.PAYPAL.value,
+            "subscription_id": subscription.id,
+        },
+    )
+    db.add(payment)
+    db.commit()
+    db.refresh(payment)
+
+    frontend_url = get_frontend_url()
+    order_payload = {
+        "intent": "CAPTURE",
+        "purchase_units": [
+            {
+                "reference_id": f"subscription-{subscription.id}",
+                "description": f"{plan['name']} monthly subscription",
+                "custom_id": str(subscription.id),
+                "amount": {
+                    "currency_code": "USD",
+                    "value": f"{plan['price']:.2f}",
+                },
+            }
+        ],
+        "payment_source": {
+            "paypal": {
+                "experience_context": {
+                    "landing_page": "LOGIN",
+                    "user_action": "PAY_NOW",
+                    "return_url": f"{frontend_url}/subscription/success",
+                    "cancel_url": f"{frontend_url}/subscription/cancel",
+                }
+            }
+        },
+    }
+
+    try:
+        order = paypal_api_request("/v2/checkout/orders", method="POST", payload=order_payload)
+    except Exception:
+        db.delete(payment)
+        db.delete(subscription)
+        db.commit()
+        raise
+
+    order_id = order.get("id")
+    if not order_id:
+        db.delete(payment)
+        db.delete(subscription)
+        db.commit()
+        raise ValueError("PayPal did not return an order id.")
+
+    subscription.stripe_subscription_id = f"paypal-order-{order_id}"
+    payment.stripe_checkout_session_id = order_id
+    payment.payment_metadata = {
+        **(payment.payment_metadata or {}),
+        "paypal_order_id": order_id,
+    }
+    db.commit()
+
+    return {
+        "id": order_id,
+        "subscription_id": subscription.id,
+        "plan": plan["name"],
+        "provider": PaymentProvider.PAYPAL.value,
+    }
+
+
+def capture_paypal_subscription_order(db: Session, order_id: str) -> Dict[str, Any]:
+    if not order_id:
+        raise ValueError("PayPal order id is required.")
+
+    order = paypal_api_request(f"/v2/checkout/orders/{order_id}/capture", method="POST", payload={})
+    status = order.get("status")
+    if status != "COMPLETED":
+        raise ValueError(f"PayPal capture returned status {status or 'unknown'}.")
+
+    subscription = db.query(Subscription).filter(
+        Subscription.stripe_subscription_id == f"paypal-order-{order_id}"
+    ).order_by(Subscription.created_at.desc()).first()
+    if subscription is None:
+        raise ValueError("Subscription record not found for this PayPal order.")
+
+    payment = db.query(Payment).filter(Payment.stripe_checkout_session_id == order_id).order_by(Payment.created_at.desc()).first()
+
+    capture_id = None
+    purchase_units = order.get("purchase_units") or []
+    if purchase_units:
+        payments = purchase_units[0].get("payments") or {}
+        captures = payments.get("captures") or []
+        if captures:
+            capture_id = captures[0].get("id")
+
+    subscription.is_active = True
+    subscription.cancel_at_period_end = False
+    subscription.current_period_start = datetime.utcnow()
+    subscription.current_period_end = datetime.utcnow() + timedelta(days=30)
+    subscription.stripe_customer_id = order.get("payer", {}).get("payer_id")
+    subscription.stripe_subscription_id = f"paypal-capture-{capture_id or order_id}"
+
+    if payment is not None:
+        payment.status = PaymentStatus.COMPLETED
+        payment.completed_at = datetime.utcnow()
+        payment.stripe_payment_intent_id = capture_id
+        payment.payment_metadata = {
+            **(payment.payment_metadata or {}),
+            "paypal_order_status": status,
+            "paypal_capture_id": capture_id,
+        }
+
+    db.commit()
+    db.refresh(subscription)
+
+    return order
 
 
 def handle_webhook_event(event_type: str, data: Dict[str, Any]) -> Optional[Payment]:
@@ -597,6 +813,8 @@ def cancel_subscription_for_user(db: Session, email: str) -> Optional[Subscripti
         stripe_subscription_id
         and not stripe_subscription_id.startswith("manual-admin-")
         and not stripe_subscription_id.startswith("paypal-pending-")
+        and not stripe_subscription_id.startswith("paypal-order-")
+        and not stripe_subscription_id.startswith("paypal-capture-")
         and not stripe.api_key.endswith("placeholder")
     )
 
