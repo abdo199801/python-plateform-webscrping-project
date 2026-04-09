@@ -12,6 +12,9 @@ import re
 import urllib.parse
 import json
 import os
+import platform
+import shutil
+import tempfile
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple, Union
 import logging
@@ -54,7 +57,7 @@ class BusinessData:
 
 class UniversalGoogleMapsScraper:
     def __init__(self, headless=False, max_results=100, scroll_pause=2, delay_between_requests=1.5):
-        self.headless = headless
+        self.headless = self._resolve_headless_mode(headless)
         self.max_results = max_results
         self.scroll_pause = scroll_pause
         self.delay_between_requests = delay_between_requests
@@ -74,6 +77,53 @@ class UniversalGoogleMapsScraper:
         self.config_dir = "scraper_config"
         self.cache_dir = "cache"
         self.create_directories()
+
+    def _resolve_headless_mode(self, requested_headless: bool) -> bool:
+        if requested_headless:
+            return True
+
+        if os.name != "nt":
+            has_display = bool(os.getenv("DISPLAY") or os.getenv("WAYLAND_DISPLAY"))
+            if not has_display:
+                logger.info("No desktop display detected; forcing headless browser mode.")
+                return True
+
+        return False
+
+    def _resolve_browser_binary(self) -> Optional[str]:
+        env_candidates = [
+            os.getenv("CHROME_BINARY_PATH", "").strip(),
+            os.getenv("GOOGLE_CHROME_BIN", "").strip(),
+            os.getenv("CHROMIUM_BIN", "").strip(),
+        ]
+        path_candidates = [candidate for candidate in env_candidates if candidate]
+
+        if os.name == "nt":
+            path_candidates.extend([
+                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            ])
+        else:
+            for executable in ["google-chrome", "chrome", "chromium", "chromium-browser", "microsoft-edge"]:
+                resolved = shutil.which(executable)
+                if resolved:
+                    path_candidates.append(resolved)
+
+            path_candidates.extend([
+                "/usr/bin/google-chrome",
+                "/usr/bin/chromium",
+                "/usr/bin/chromium-browser",
+                "/opt/render/project/.render/chrome/opt/google/chrome/chrome",
+            ])
+
+        for candidate in path_candidates:
+            if candidate and os.path.exists(candidate):
+                logger.info(f"Using browser binary: {candidate}")
+                return candidate
+
+        logger.warning("No explicit Chrome/Chromium binary found. Selenium will try its default browser resolution.")
+        return None
 
     def determine_location_from_input(self, location_input: str) -> Dict:
         """Parse location input to extract country, city, etc."""
@@ -292,6 +342,7 @@ class UniversalGoogleMapsScraper:
     def setup_driver(self):
         """Setup Chrome WebDriver with enhanced anti-detection measures and crash prevention"""
         chrome_options = Options()
+        runtime_system = platform.system().lower()
 
         # Use headless mode only if explicitly requested
         if self.headless:
@@ -306,7 +357,6 @@ class UniversalGoogleMapsScraper:
         chrome_options.add_argument("--disable-gpu-software-rasterization")
 
         # Use a temporary user data directory to avoid profile corruption
-        import tempfile
         user_data_dir = tempfile.mkdtemp(prefix="chrome_profile_")
         chrome_options.add_argument(f"--user-data-dir={user_data_dir}")
         
@@ -318,8 +368,9 @@ class UniversalGoogleMapsScraper:
         chrome_options.add_argument("--remote-debugging-port=9222")
         
         # Add single process flag (can help on Windows)
-        chrome_options.add_argument("--single-process")
-        chrome_options.add_argument("--no-zygote")
+        if os.name != "nt":
+            chrome_options.add_argument("--single-process")
+            chrome_options.add_argument("--no-zygote")
 
         # ===== ANTI-DETECTION SETTINGS =====
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
@@ -353,7 +404,8 @@ class UniversalGoogleMapsScraper:
         # Windows-specific stability options
         chrome_options.add_argument("--disable-features=TranslateUI")
         chrome_options.add_argument("--disable-features=PrivacySandboxSettings4")
-        chrome_options.add_argument("--ozone-platform=win")
+        if os.name == "nt":
+            chrome_options.add_argument("--ozone-platform=win")
 
         # ===== WINDOW SETTINGS =====
         # Set window size but don't maximize in headless mode (causes crashes)
@@ -380,18 +432,19 @@ class UniversalGoogleMapsScraper:
         chrome_options.add_argument(f'--window-position={random.randint(0, 500)},{random.randint(0, 500)}')
 
         # Set Chrome binary location explicitly
-        chrome_options.binary_location = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+        browser_binary = self._resolve_browser_binary()
+        if browser_binary:
+            chrome_options.binary_location = browser_binary
 
         # Kill any existing Chrome processes to avoid conflicts
-        try:
-            import subprocess
-            subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], 
-                          capture_output=True, timeout=5)
-            subprocess.run(["taskkill", "/F", "/IM", "chromedriver.exe"], 
-                          capture_output=True, timeout=5)
-            logger.info("Killed existing Chrome processes")
-        except:
-            pass
+        if os.name == "nt":
+            try:
+                import subprocess
+                subprocess.run(["taskkill", "/F", "/IM", "chrome.exe"], capture_output=True, timeout=5)
+                subprocess.run(["taskkill", "/F", "/IM", "chromedriver.exe"], capture_output=True, timeout=5)
+                logger.info("Killed existing Chrome processes")
+            except Exception:
+                pass
 
         driver = None
         errors = []
@@ -465,7 +518,10 @@ class UniversalGoogleMapsScraper:
             logger.error("  5. Check Chrome version: chrome://version")
             logger.error("  6. Reinstall Chrome if corrupted")
             logger.error("  7. Try using Edge browser instead (set headless=True)")
-            raise RuntimeError("Failed to initialize WebDriver after all attempts")
+            raise RuntimeError(
+                "Failed to initialize WebDriver after all attempts. "
+                "On hosted Linux, make sure the browser can run in headless mode and that a Chrome or Chromium binary is available."
+            )
 
         self.driver = driver
         self.wait = WebDriverWait(self.driver, 20)
@@ -474,7 +530,7 @@ class UniversalGoogleMapsScraper:
         try:
             self.driver.execute_cdp_cmd('Network.setUserAgentOverride', {
                 "userAgent": user_agent,
-                "platform": "Windows"
+                "platform": "Windows" if runtime_system == "windows" else runtime_system.title()
             })
         except Exception as e:
             logger.warning(f"Failed to execute CDP command: {e}")
