@@ -416,12 +416,6 @@ h2,
 }
 
 label {
-
-  .saved-search-toolbar,
-  .lead-filter-actions {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
   display: grid;
   gap: 8px;
   font-weight: 600;
@@ -576,6 +570,8 @@ button:disabled {
 
 .table-wrap {
   overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border-radius: 18px;
 }
 
 .table-submeta {
@@ -648,6 +644,7 @@ button:disabled {
 table {
   width: 100%;
   border-collapse: collapse;
+  min-width: 900px;
 }
 
 th,
@@ -907,6 +904,13 @@ th {
   gap: 10px;
 }
 
+.pricing-note {
+  margin: 12px 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
 /* Credit Grid */
 .credit-grid {
   display: grid;
@@ -976,6 +980,36 @@ a {
   color: var(--accent-dark);
 }
 
+@media (max-width: 1024px) {
+  .page {
+    width: min(100%, calc(100% - 24px));
+    padding: 24px 0 48px;
+  }
+
+  .hero {
+    grid-template-columns: 1.2fr 0.9fr;
+    padding: 24px;
+  }
+
+  .dashboard-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-summary-grid,
+  .insight-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .insight-columns,
+  .lead-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .panel-header {
+    align-items: flex-start;
+  }
+}
+
 @media (max-width: 800px) {
   .hero,
   .form-grid,
@@ -994,8 +1028,17 @@ a {
     flex-wrap: wrap;
   }
 
+  .header-content {
+    align-items: flex-start;
+  }
+
+  .nav {
+    width: 100%;
+  }
+
   .panel-actions {
     justify-content: stretch;
+    width: 100%;
   }
 
   .download-toolbar,
@@ -1024,6 +1067,14 @@ a {
     padding: 24px;
   }
 
+  .panel {
+    padding: 20px;
+  }
+
+  .panel-header {
+    flex-direction: column;
+  }
+
   .hero-actions {
     flex-direction: column;
     align-items: stretch;
@@ -1035,6 +1086,157 @@ a {
   
   .email-field {
     grid-column: span 1;
+  }
+
+  .pricing-actions-row,
+  .dashboard-actions,
+  .saved-search-actions {
+    grid-template-columns: 1fr;
+    width: 100%;
+  }
+
+  .saved-search-actions,
+  .lead-filter-actions {
+    display: grid;
+  }
+
+  .signal-row {
+    align-items: flex-start;
+  }
+
+  .signal-run-meta {
+    text-align: left;
+  }
+}
+
+@media (max-width: 640px) {
+  .page {
+    width: calc(100% - 16px);
+    padding: 16px 0 36px;
+  }
+
+  .header {
+    position: static;
+  }
+
+  .header-content {
+    padding: 12px;
+  }
+
+  .logo-text {
+    font-size: 1.1rem;
+  }
+
+  .nav {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .nav-link,
+  .credit-display {
+    justify-content: center;
+    text-align: center;
+  }
+
+  .credit-display {
+    width: 100%;
+  }
+
+  h1 {
+    font-size: clamp(2.2rem, 10vw, 3rem);
+    max-width: none;
+  }
+
+  h2 {
+    font-size: 1.9rem;
+  }
+
+  .intro {
+    font-size: 1rem;
+    line-height: 1.6;
+  }
+
+  .hero,
+  .panel {
+    border-radius: 20px;
+  }
+
+  .hero,
+  .panel,
+  .auth-card,
+  .dashboard-metric,
+  .dashboard-card,
+  .insight-card,
+  .insight-column,
+  .pricing-card,
+  .run-card {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .hero-radar {
+    padding: 20px;
+  }
+
+  .radar-metrics,
+  .dashboard-summary-grid,
+  .insight-grid,
+  .pricing-grid,
+  .cards {
+    grid-template-columns: 1fr;
+  }
+
+  .lead-filter-grid,
+  .form-grid,
+  .saved-search-toolbar,
+  .auth-layout,
+  .insight-columns,
+  .dashboard-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .signal-row,
+  .saved-search-row {
+    flex-direction: column;
+  }
+
+  .saved-search-actions,
+  .run-actions,
+  .download-toolbar,
+  .hero-actions,
+  .panel-actions {
+    width: 100%;
+  }
+
+  .saved-search-actions button,
+  .run-actions a,
+  .run-actions button,
+  .download-toolbar a,
+  .panel-actions button,
+  .hero-actions a,
+  .pricing-actions-row button,
+  .dashboard-actions button {
+    width: 100%;
+  }
+
+  .lead-cell {
+    min-width: 220px;
+  }
+
+  th,
+  td {
+    padding: 10px 8px;
+    font-size: 0.92rem;
+  }
+
+  .pagination-bar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .pagination-bar button {
+    width: 100%;
   }
 }
 
