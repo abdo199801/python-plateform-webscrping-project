@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app import models
+from app.database import SessionLocal
 
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -124,3 +125,64 @@ def persist_scrape(
     db.commit()
     db.refresh(run)
     return run
+
+
+def create_scrape_run(db: Session, payload: Dict[str, Any], status: str = "queued") -> models.ScrapeRun:
+    run = models.ScrapeRun(
+        keyword=payload["keyword"],
+        location=payload["location"],
+        radius=payload["radius"],
+        max_results=payload["max_results"],
+        headless=payload["headless"],
+        total_results=0,
+        status=status,
+    )
+    db.add(run)
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def complete_scrape_run(db: Session, run_id: int, results: List[Dict[str, Any]]) -> models.ScrapeRun:
+    run = db.query(models.ScrapeRun).filter(models.ScrapeRun.id == run_id).first()
+    if run is None:
+        raise ValueError(f"Scrape run {run_id} not found")
+
+    run.status = "completed"
+    run.total_results = len(results)
+
+    for raw_business in results:
+        normalized = {key: raw_business.get(key) for key in BUSINESS_FIELDS}
+        normalized["name"] = normalized.get("name") or "Unknown"
+        business = models.Business(scrape_run_id=run.id, **normalized)
+        db.add(business)
+
+    db.commit()
+    db.refresh(run)
+    return run
+
+
+def fail_scrape_run(db: Session, run_id: int) -> None:
+    run = db.query(models.ScrapeRun).filter(models.ScrapeRun.id == run_id).first()
+    if run is None:
+        return
+
+    run.status = "failed"
+    db.commit()
+
+
+def process_scrape_run(run_id: int, payload: Dict[str, Any], user_email: str) -> None:
+    db = SessionLocal()
+    try:
+        results = run_scrape(payload)
+        complete_scrape_run(db, run_id, results)
+
+        from app.payment_service import mark_user_scrape
+
+        mark_user_scrape(db, user_email)
+    except Exception:
+        db.rollback()
+        fail_scrape_run(db, run_id)
+        raise
+    finally:
+        db.close()

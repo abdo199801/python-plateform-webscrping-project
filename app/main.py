@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -44,7 +44,7 @@ from app.schemas import (
     ScrapeRunResponse,
     ScrapeSummaryResponse,
 )
-from app.services import persist_scrape, run_scrape
+from app.services import create_scrape_run, process_scrape_run
 from app.payment_models import Payment, PaymentStatus, ScrapeCredit, Subscription
 from app.payment_schemas import (
     AccessStatusResponse,
@@ -367,6 +367,7 @@ def health_check_head():
 @app.post("/api/scrapes", response_model=ScrapeSummaryResponse)
 async def create_scrape(
     payload: ScrapeRequest,
+    background_tasks: BackgroundTasks,
     current_user=Depends(get_optional_platform_user),
     db: Session = Depends(get_db),
 ):
@@ -404,25 +405,20 @@ async def create_scrape(
             ),
         )
 
-    try:
-        results = await run_in_threadpool(run_scrape, data)
-        run = persist_scrape(db, data, results)
-        mark_user_scrape(db, payload.email)
-        hydrated_run = (
-            db.query(ScrapeRun)
-            .options(joinedload(ScrapeRun.businesses))
-            .filter(ScrapeRun.id == run.id)
-            .first()
-        )
-        return {
-            "run": hydrated_run,
-            "results": hydrated_run.businesses,
-            "remaining_credits": access_state["trial_days_left"],
-            "billing_mode": billing_mode,
-        }
-    except Exception as exc:
-        db.rollback()
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    run = create_scrape_run(db, data, status="queued")
+    background_tasks.add_task(process_scrape_run, run.id, data, payload.email)
+    queued_run = (
+        db.query(ScrapeRun)
+        .options(joinedload(ScrapeRun.businesses))
+        .filter(ScrapeRun.id == run.id)
+        .first()
+    )
+    return {
+        "run": queued_run,
+        "results": [],
+        "remaining_credits": access_state["trial_days_left"],
+        "billing_mode": billing_mode,
+    }
 
 
 def build_pagination(page: int, page_size: int, total: int) -> PaginationMetaResponse:

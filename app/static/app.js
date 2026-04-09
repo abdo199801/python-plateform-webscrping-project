@@ -570,9 +570,10 @@ function renderRuns(runs, pagination) {
           <p class="meta">${formatNumber(run.total_results)} saved businesses</p>
           <p class="meta">Radius: ${escapeHtml(run.radius)} | Max: ${run.max_results}</p>
           <p class="meta">Mode: ${run.headless ? "Headless" : "Visible browser"}</p>
+          <p class="meta">Status: ${escapeHtml((run.status || "queued").toUpperCase())}</p>
           <p class="meta">${formatDate(run.created_at)}</p>
           <div class="run-actions">
-            ${buildExportButtons(run.id)}
+            ${run.status === "completed" ? buildExportButtons(run.id) : ""}
           </div>
         </article>
       `
@@ -1208,7 +1209,11 @@ formEl.addEventListener("submit", async (event) => {
       throw new Error("The server returned an empty response for the scrape request.");
     }
 
-    setStatus(`Saved ${data.results.length} businesses. Access mode used: ${data.billing_mode}. Trial days left: ${data.remaining_credits}.`);
+    if (data.run?.status === "queued") {
+      setStatus(`Scrape queued successfully. The run is processing in the background. Access mode used: ${data.billing_mode}. Refresh runs in a few moments to see results.`);
+    } else {
+      setStatus(`Saved ${data.results.length} businesses. Access mode used: ${data.billing_mode}. Trial days left: ${data.remaining_credits}.`);
+    }
     runListState.page = 1;
     businessListState.page = 1;
     await Promise.all([loadRuns(), loadBusinesses(), loadInsights(), loadAccessStatus()]);
