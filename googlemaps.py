@@ -34,6 +34,22 @@ DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "0"
 WEBSITE_FETCH_TIMEOUT_SECONDS = 8
 WEBSITE_FETCH_MAX_PAGES = 3
 WEBSITE_CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us"]
+RESULT_PANEL_SELECTORS = [
+    "div[role='feed']",
+    "div[aria-label*='Results']",
+    "div.m6QErb[aria-label*='Results']",
+    "div.m6QErb.DxyBCb",
+    "div.m6QErb.kA9KIf.dS8AEf",
+    "div[role='main'] div.m6QErb.DxyBCb",
+]
+BUSINESS_CARD_SELECTORS = [
+    "div[role='article']",
+    "div.Nv2PK",
+    "a.hfpxzc",
+    "div[jsaction*='pane.result']",
+    "div[aria-label][role='article']",
+    "div.lI9IFe",
+]
 
 
 @dataclass
@@ -384,14 +400,27 @@ class UniversalGoogleMapsScraper:
     def _get_business_cards(self) -> Locator:
         if self.page is None:
             raise RuntimeError("Browser page was not initialized.")
-        return self.page.locator("div[role='article'], div.Nv2PK, a.hfpxzc")
+        return self.page.locator(", ".join(BUSINESS_CARD_SELECTORS))
+
+    def _count_business_cards(self) -> int:
+        if self.page is None:
+            return 0
+        highest_count = 0
+        for selector in BUSINESS_CARD_SELECTORS:
+            try:
+                count = self.page.locator(selector).count()
+            except Exception:
+                continue
+            if count > highest_count:
+                highest_count = count
+        return highest_count
 
     def _wait_for_results_or_empty_state(self) -> bool:
         if self.page is None:
             return False
         deadline = time.monotonic() + RESULTS_PANEL_TIMEOUT_SECONDS
         while time.monotonic() < deadline:
-            if self._get_business_cards().count() > 0:
+            if self._count_business_cards() > 0:
                 return True
             body = (self.page.locator("body").inner_text(timeout=2_000) or "").lower()
             if "no results found" in body or "did not match any locations" in body:
@@ -404,26 +433,75 @@ class UniversalGoogleMapsScraper:
     def _find_results_panel(self) -> Optional[Locator]:
         if self.page is None:
             return None
-        selectors = ["div[role='feed']", "div.m6QErb[aria-label*='Results']", "div.m6QErb.DxyBCb"]
-        for selector in selectors:
+        for selector in RESULT_PANEL_SELECTORS:
             locator = self.page.locator(selector).first
             try:
-                if locator.count():
+                if locator.count() and locator.is_visible(timeout=1_500):
                     return locator
             except Exception:
                 continue
         return None
 
     def _scroll_results_panel(self, panel: Locator) -> None:
+        if self.page is None:
+            return
+
+        scroll_attempts = [
+            self._scroll_results_panel_via_evaluate,
+            self._scroll_results_panel_via_handle,
+            self._scroll_results_panel_via_wheel,
+            self._scroll_results_panel_via_keyboard,
+        ]
+        for strategy in scroll_attempts:
+            try:
+                strategy(panel)
+                self.human_like_delay(1.0, 2.2)
+                return
+            except Exception as exc:
+                logger.debug("Results scroll strategy %s failed: %s", strategy.__name__, exc)
+                continue
+
+        raise RuntimeError("Could not scroll the Google Maps results panel with any locator strategy.")
+
+    def _scroll_results_panel_via_evaluate(self, panel: Locator) -> None:
         panel.evaluate(
             """
             (element) => {
-                const step = Math.floor(element.clientHeight * (0.45 + Math.random() * 0.25));
-                element.scrollBy({ top: step, behavior: 'smooth' });
+                const step = Math.floor((element.clientHeight || 800) * (0.45 + Math.random() * 0.25));
+                element.scrollBy({ top: step, behavior: 'auto' });
             }
-            """
+            """,
+            timeout=5_000,
         )
-        self.human_like_delay(1.0, 2.2)
+
+    def _scroll_results_panel_via_handle(self, panel: Locator) -> None:
+        if self.page is None:
+            return
+        handle = panel.element_handle(timeout=3_000)
+        if handle is None:
+            raise RuntimeError("Results panel element handle was not available.")
+        self.page.evaluate(
+            """
+            (element) => {
+                const step = Math.floor((element.clientHeight || 800) * (0.5 + Math.random() * 0.2));
+                element.scrollTop = (element.scrollTop || 0) + step;
+            }
+            """,
+            handle,
+        )
+
+    def _scroll_results_panel_via_wheel(self, panel: Locator) -> None:
+        if self.page is None:
+            return
+        panel.hover(timeout=2_000)
+        self.page.mouse.wheel(0, random.randint(700, 1200))
+
+    def _scroll_results_panel_via_keyboard(self, panel: Locator) -> None:
+        if self.page is None:
+            return
+        panel.click(timeout=2_000)
+        self.page.keyboard.press("PageDown")
+        self.page.keyboard.press("ArrowDown")
 
     def scroll_results_enhanced(self, progress_callback=None) -> None:
         panel = self._find_results_panel()
@@ -434,7 +512,8 @@ class UniversalGoogleMapsScraper:
         stagnant_rounds = 0
         max_scroll_rounds = max(35, min(180, int(self.max_results / 4) + 20))
         for _ in range(max_scroll_rounds):
-            count = self._get_business_cards().count()
+            panel = self._find_results_panel() or panel
+            count = self._count_business_cards()
             if progress_callback:
                 progress_callback(0, f"Loaded {count} map results so far...")
             if count >= self.max_results:
