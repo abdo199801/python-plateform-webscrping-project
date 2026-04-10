@@ -97,6 +97,34 @@ BUSINESS_FIELDS = {
 }
 
 
+def _business_identity(raw_business: Dict[str, Any]) -> str:
+    place_id = (raw_business.get("place_id") or "").strip().lower()
+    if place_id:
+        return f"place:{place_id}"
+
+    website = (raw_business.get("website") or "").strip().lower()
+    if website:
+        return f"website:{website}"
+
+    name = (raw_business.get("name") or "").strip().lower()
+    address = (raw_business.get("address") or "").strip().lower()
+    return f"name:{name}|address:{address}"
+
+
+def dedupe_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    unique_results: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    for result in results:
+        identity = _business_identity(result)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique_results.append(result)
+
+    return unique_results
+
+
 def run_scrape(payload: Dict[str, Any], progress_callback=None) -> List[Dict[str, Any]]:
     """Run the scraper with lazy module loading."""
     try:
@@ -189,6 +217,7 @@ def persist_scrape(
     payload: Dict[str, Any],
     results: List[Dict[str, Any]],
 ) -> models.ScrapeRun:
+    results = dedupe_results(results)
     run = models.ScrapeRun(
         keyword=payload["keyword"],
         location=payload["location"],
@@ -264,6 +293,8 @@ def complete_scrape_run(db: Session, run_id: int, results: List[Dict[str, Any]])
     run = db.query(models.ScrapeRun).filter(models.ScrapeRun.id == run_id).first()
     if run is None:
         raise ValueError(f"Scrape run {run_id} not found")
+
+    results = dedupe_results(results)
 
     run.status = "completed"
     run.processed_results = len(results)

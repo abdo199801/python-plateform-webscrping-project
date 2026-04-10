@@ -7,11 +7,14 @@ import sys
 import threading
 import time
 import urllib.parse
+from urllib import error as urlerror
+from urllib import request as urlrequest
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
+from bs4 import BeautifulSoup
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, Locator, sync_playwright
 
@@ -28,6 +31,9 @@ RESULTS_PANEL_TIMEOUT_SECONDS = 25
 DETAIL_PANEL_TIMEOUT_SECONDS = 12
 _PLAYWRIGHT_INSTALL_LOCK = threading.Lock()
 DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "0"
+WEBSITE_FETCH_TIMEOUT_SECONDS = 8
+WEBSITE_FETCH_MAX_PAGES = 3
+WEBSITE_CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us"]
 
 
 @dataclass
@@ -65,6 +71,7 @@ class UniversalGoogleMapsScraper:
         self.browser = None
         self.context = None
         self.page: Optional[Page] = None
+        self.session_user_agent = ""
 
         self.phone_pattern = re.compile(r"(\+\d{1,3}[\s\-]?)?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,9}")
         self.email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
@@ -259,6 +266,12 @@ class UniversalGoogleMapsScraper:
 
             return self.playwright.chromium.launch(**launch_kwargs)
 
+    def _build_request_headers(self) -> Dict[str, str]:
+        return {
+            "User-Agent": self.session_user_agent or "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+
     def setup_driver(self) -> None:
         self._enforce_playwright_runtime_environment()
         user_agents = [
@@ -284,9 +297,10 @@ class UniversalGoogleMapsScraper:
         elif browser_channel:
             launch_kwargs["channel"] = browser_channel
 
+        self.session_user_agent = random.choice(user_agents)
         self.browser = self._launch_browser(launch_kwargs)
         self.context = self.browser.new_context(
-            user_agent=random.choice(user_agents),
+            user_agent=self.session_user_agent,
             viewport={"width": random.randint(1366, 1680), "height": random.randint(820, 980)},
             locale="en-US",
             extra_http_headers={"Accept-Language": "en-US,en;q=0.9"},
@@ -418,7 +432,8 @@ class UniversalGoogleMapsScraper:
             return
         last_count = 0
         stagnant_rounds = 0
-        for _ in range(35):
+        max_scroll_rounds = max(35, min(180, int(self.max_results / 4) + 20))
+        for _ in range(max_scroll_rounds):
             count = self._get_business_cards().count()
             if progress_callback:
                 progress_callback(0, f"Loaded {count} map results so far...")
@@ -482,6 +497,110 @@ class UniversalGoogleMapsScraper:
         if cleaned.startswith("www."):
             return f"https://{cleaned}"
         return cleaned
+
+    def _normalize_phone(self, value: str) -> str:
+        cleaned = self._clean_text(value)
+        if not cleaned:
+            return ""
+        match = self.phone_pattern.search(cleaned)
+        return self._clean_text(match.group(0)) if match else cleaned
+
+    def _fetch_url_text(self, url: str) -> Tuple[str, str]:
+        request = urlrequest.Request(url, headers=self._build_request_headers())
+        with urlrequest.urlopen(request, timeout=WEBSITE_FETCH_TIMEOUT_SECONDS) as response:
+            content_type = response.headers.get("Content-Type", "")
+            if "text/html" not in content_type and "application/xhtml+xml" not in content_type:
+                return "", response.geturl()
+            body = response.read().decode("utf-8", errors="replace")
+            return body, response.geturl()
+
+    def _extract_contact_links_from_html(self, html: str, base_url: str) -> List[str]:
+        soup = BeautifulSoup(html, "html.parser")
+        links: List[str] = []
+        seen = set()
+        for anchor in soup.select("a[href]"):
+            href = (anchor.get("href") or "").strip()
+            label = self._clean_text(anchor.get_text(" "))
+            if not href:
+                continue
+            absolute = urllib.parse.urljoin(base_url, href)
+            lowered = absolute.lower()
+            if any(path in lowered for path in WEBSITE_CONTACT_PATHS) or any(word in label.lower() for word in ["contact", "about", "support"]):
+                if absolute not in seen:
+                    links.append(absolute)
+                    seen.add(absolute)
+            if len(links) >= WEBSITE_FETCH_MAX_PAGES - 1:
+                break
+        return links
+
+    def _extract_contact_details_from_html(self, html: str, base_url: str) -> Dict[str, str]:
+        info = {"email": "", "phone": "", "social_media": ""}
+        if not html:
+            return info
+
+        emails: List[str] = []
+        for email in self.email_pattern.findall(html):
+            cleaned = email.strip().lower()
+            if cleaned and cleaned not in emails:
+                emails.append(cleaned)
+        if emails:
+            info["email"] = emails[0]
+
+        phone_candidates: List[str] = []
+        for match in self.phone_pattern.finditer(html):
+            candidate = self._normalize_phone(match.group(0))
+            if candidate and candidate not in phone_candidates and len(re.sub(r"\D", "", candidate)) >= 7:
+                phone_candidates.append(candidate)
+        if phone_candidates:
+            info["phone"] = phone_candidates[0]
+
+        soup = BeautifulSoup(html, "html.parser")
+        social_links: List[str] = []
+        for anchor in soup.select("a[href]"):
+            href = urllib.parse.urljoin(base_url, (anchor.get("href") or "").strip())
+            lowered = href.lower()
+            if any(domain in lowered for domain in ["facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "tiktok.com", "youtube.com"]):
+                if href not in social_links:
+                    social_links.append(href)
+        if social_links:
+            info["social_media"] = ", ".join(social_links[:5])
+
+        return info
+
+    def _enrich_from_website(self, website_url: str) -> Dict[str, str]:
+        normalized_website = self._normalize_website(website_url)
+        if not normalized_website or not normalized_website.startswith(("http://", "https://")):
+            return {"email": "", "phone": "", "social_media": ""}
+
+        visited = set()
+        queue = [normalized_website]
+        best = {"email": "", "phone": "", "social_media": ""}
+
+        while queue and len(visited) < WEBSITE_FETCH_MAX_PAGES:
+            current_url = queue.pop(0)
+            if current_url in visited:
+                continue
+            visited.add(current_url)
+
+            try:
+                html, final_url = self._fetch_url_text(current_url)
+            except (urlerror.URLError, TimeoutError, OSError, ValueError) as exc:
+                logger.debug("Website enrichment fetch failed for %s: %s", current_url, exc)
+                continue
+
+            extracted = self._extract_contact_details_from_html(html, final_url)
+            for key, value in extracted.items():
+                if value and not best.get(key):
+                    best[key] = value
+
+            if best.get("email") and best.get("phone") and best.get("social_media"):
+                break
+
+            for next_url in self._extract_contact_links_from_html(html, final_url):
+                if next_url not in visited and next_url not in queue:
+                    queue.append(next_url)
+
+        return best
 
     def _extract_social_media_links(self) -> str:
         if self.page is None:
@@ -576,7 +695,7 @@ class UniversalGoogleMapsScraper:
             "a[href^='tel:']",
         ])
         if phone_text and self.phone_pattern.search(phone_text):
-            info["phone"] = self._clean_text(phone_text)
+            info["phone"] = self._normalize_phone(phone_text)
         website = self._first_attribute([
             ("a[data-item-id*='authority']", "href"),
             ("a[aria-label*='Website']", "href"),
@@ -715,6 +834,11 @@ class UniversalGoogleMapsScraper:
                 details = self._extract_contact_info()
                 details.update(self._extract_address_info())
                 details.update(self._extract_business_hours_and_description())
+                if details.get("website"):
+                    enriched = self._enrich_from_website(details["website"])
+                    for field in ("email", "phone", "social_media"):
+                        if enriched.get(field) and not details.get(field):
+                            details[field] = enriched[field]
                 for key, value in details.items():
                     if hasattr(data, key) and value:
                         setattr(data, key, value)
