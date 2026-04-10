@@ -88,7 +88,7 @@ let paymentConfig = {
 let accessState = null;
 const runListState = { page: 1, pageSize: 6 };
 const runFiltersState = { search: "", status: "" };
-const DEFAULT_MAX_RESULTS_PER_SCRAPE = 500;
+const DEFAULT_MAX_RESULTS_PER_SCRAPE = 1000;
 const ENTERPRISE_MAX_RESULTS_PER_SCRAPE = 1000;
 const businessListState = {
   page: 1,

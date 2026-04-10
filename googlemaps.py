@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import unicodedata
 from urllib import error as urlerror
 from urllib import request as urlrequest
 from dataclasses import asdict, dataclass
@@ -50,6 +51,8 @@ BUSINESS_CARD_SELECTORS = [
     "div[aria-label][role='article']",
     "div.lI9IFe",
 ]
+MAX_SEARCH_VARIANTS = 4
+MAX_SCROLL_STAGNANT_ROUNDS = 12
 
 
 @dataclass
@@ -78,7 +81,7 @@ class BusinessData:
 
 
 class UniversalGoogleMapsScraper:
-    def __init__(self, headless: bool = False, max_results: int = 100, scroll_pause: float = 2, delay_between_requests: float = 1.5):
+    def __init__(self, headless: bool = False, max_results: int = 1000, scroll_pause: float = 2, delay_between_requests: float = 1.5):
         self.headless = self._resolve_headless_mode(headless)
         self.max_results = max_results
         self.scroll_pause = scroll_pause
@@ -97,6 +100,92 @@ class UniversalGoogleMapsScraper:
         self.config_dir = "scraper_config"
         self.cache_dir = "cache"
         self.create_directories()
+
+    def _normalize_lookup_text(self, value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "")
+        ascii_text = normalized.encode("ascii", "ignore").decode("ascii")
+        lowered = ascii_text.lower().strip()
+        return re.sub(r"\s+", " ", lowered)
+
+    def _canonical_country_name(self, value: str) -> str:
+        lookup = self._normalize_lookup_text(value)
+        if not lookup:
+            return ""
+
+        for country, codes in self.country_aliases.items():
+            aliases = [country, *codes]
+            normalized_aliases = {self._normalize_lookup_text(alias) for alias in aliases}
+            if lookup in normalized_aliases:
+                return country
+
+        for country, codes in self.country_aliases.items():
+            aliases = [country, *codes]
+            normalized_aliases = {self._normalize_lookup_text(alias) for alias in aliases}
+            if any(alias and alias in lookup for alias in normalized_aliases):
+                return country
+
+        return value.strip()
+
+    def _location_parts_from_input(self, location_input: str) -> List[str]:
+        return [part.strip() for part in re.split(r"[,;/|-]", location_input or "") if part.strip()]
+
+    def _matches_country_alias(self, haystack: str, alias: str) -> bool:
+        normalized_haystack = self._normalize_lookup_text(haystack)
+        normalized_alias = self._normalize_lookup_text(alias)
+        if not normalized_haystack or not normalized_alias:
+            return False
+        if len(normalized_alias) <= 3 and normalized_alias.isalpha():
+            tokens = set(re.findall(r"\b[a-z]{2,}\b", normalized_haystack))
+            return normalized_alias in tokens
+        return normalized_alias in normalized_haystack
+
+    def _build_location_variants(self, location_info: Dict[str, str]) -> List[str]:
+        variants: List[str] = []
+        original = (location_info.get("original_input") or "").strip()
+        city = (location_info.get("city") or "").strip()
+        state = (location_info.get("state_province") or "").strip()
+        country = (location_info.get("country") or "").strip()
+
+        for candidate in [
+            original,
+            ", ".join(part for part in [city, state, country] if part),
+            ", ".join(part for part in [city, country] if part),
+            " ".join(part for part in [city, state, country] if part),
+            " ".join(part for part in [city, country] if part),
+        ]:
+            cleaned = re.sub(r"\s+", " ", (candidate or "").strip())
+            ascii_variant = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii").strip()
+            for variant in [cleaned, ascii_variant]:
+                if variant and variant not in variants:
+                    variants.append(variant)
+
+        return variants[:MAX_SEARCH_VARIANTS]
+
+    def _build_search_queries(self, keyword: str, location: str, radius: str) -> List[str]:
+        location_info = self.determine_location_from_input(location)
+        location_variants = self._build_location_variants(location_info)
+        queries: List[str] = []
+
+        base_keyword = re.sub(r"\s+", " ", (keyword or "").strip())
+        if not base_keyword:
+            return queries
+
+        if not location_variants:
+            queries.append(base_keyword)
+        else:
+            for variant in location_variants:
+                queries.append(f"{base_keyword} {variant}".strip())
+                queries.append(f"{base_keyword} in {variant}".strip())
+
+        unique_queries: List[str] = []
+        seen = set()
+        for query in queries:
+            normalized = self._normalize_lookup_text(query)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique_queries.append(query)
+
+        return unique_queries[: max(MAX_SEARCH_VARIANTS * 2, 4)]
 
     def _resolve_headless_mode(self, requested_headless: bool) -> bool:
         if requested_headless:
@@ -190,28 +279,38 @@ class UniversalGoogleMapsScraper:
         if not location_input or not location_input.strip():
             return location_info
 
-        normalized = location_input.strip()
-        parts = [part.strip() for part in normalized.split(",") if part.strip()]
+        normalized = re.sub(r"\s+", " ", location_input.strip())
+        parts = self._location_parts_from_input(normalized)
         if len(parts) >= 2:
             location_info["city"] = parts[0]
-            location_info["country"] = parts[-1]
-            location_info["specific_location"] = normalized
+            location_info["country"] = self._canonical_country_name(parts[-1])
+            location_info["specific_location"] = ", ".join(part for part in [parts[0], *parts[1:-1], location_info["country"]] if part)
             if len(parts) >= 3:
                 location_info["state_province"] = parts[1]
         else:
-            lowered = normalized.lower()
+            lowered = self._normalize_lookup_text(normalized)
             for country, codes in self.country_aliases.items():
-                if lowered == country.lower() or lowered in {code.lower() for code in codes}:
+                aliases = {self._normalize_lookup_text(country), *(self._normalize_lookup_text(code) for code in codes)}
+                if lowered in aliases:
                     location_info["country"] = country
                     break
             if not location_info["country"]:
                 location_info["city"] = normalized
 
-        lowered = normalized.lower()
+        lowered = self._normalize_lookup_text(normalized)
         for country, codes in self.country_aliases.items():
-            if country.lower() in lowered or any(code.lower() in lowered for code in codes):
+            aliases = [country, *codes]
+            if any(self._matches_country_alias(lowered, alias) for alias in aliases):
                 location_info["country"] = country
                 break
+
+        if location_info["country"]:
+            location_info["country"] = self._canonical_country_name(location_info["country"])
+
+        if location_info["city"] and not location_info["specific_location"]:
+            location_info["specific_location"] = ", ".join(
+                part for part in [location_info["city"], location_info["state_province"], location_info["country"]] if part
+            )
 
         return location_info
 
@@ -354,17 +453,39 @@ class UniversalGoogleMapsScraper:
         self.playwright = None
 
     def build_search_url(self, keyword: str, location: str = "", radius: str = "10000") -> str:
-        location_info = self.determine_location_from_input(location)
-        terms = [keyword]
-        if location_info["specific_location"]:
-            terms.append(location_info["specific_location"])
-        elif location:
-            terms.append(location)
+        search_queries = self._build_search_queries(keyword, location, radius)
+        terms = [search_queries[0]] if search_queries else [keyword]
         query = "+".join(urllib.parse.quote_plus(term) for term in terms if term)
         url = f"https://www.google.com/maps/search/{query}/?hl=en&gl=us"
         if radius and radius != "10000":
             url = f"{url}&radius={urllib.parse.quote_plus(radius)}"
         return url
+
+    def _open_best_search_page(self, keyword: str, location: str, radius: str, progress_callback=None) -> None:
+        queries = self._build_search_queries(keyword, location, radius)
+        last_error: Optional[Exception] = None
+        for index, query in enumerate(queries, start=1):
+            encoded_query = "+".join(urllib.parse.quote_plus(term) for term in [query] if term)
+            url = f"https://www.google.com/maps/search/{encoded_query}/?hl=en&gl=us"
+            if radius and radius != "10000":
+                url = f"{url}&radius={urllib.parse.quote_plus(radius)}"
+            logger.info("Searching Google Maps with Playwright (%s/%s): %s", index, len(queries), url)
+            if progress_callback:
+                progress_callback(0, f"Opening Google Maps query {index}/{len(queries)}: {query}")
+
+            try:
+                self._open_search_page(url)
+                self.handle_google_maps_ui()
+                if self._wait_for_results_or_empty_state():
+                    return
+            except Exception as exc:
+                last_error = exc
+                logger.warning("Google Maps query variant failed: %s", exc)
+                continue
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Google Maps did not return visible results for any search query variant.")
 
     def human_like_delay(self, minimum: Optional[float] = None, maximum: Optional[float] = None) -> None:
         low = self.delay_between_requests - 0.5 if minimum is None else minimum
@@ -510,7 +631,7 @@ class UniversalGoogleMapsScraper:
             return
         last_count = 0
         stagnant_rounds = 0
-        max_scroll_rounds = max(35, min(180, int(self.max_results / 4) + 20))
+        max_scroll_rounds = max(45, min(320, int(self.max_results / 3) + 30))
         for _ in range(max_scroll_rounds):
             panel = self._find_results_panel() or panel
             count = self._count_business_cards()
@@ -523,9 +644,20 @@ class UniversalGoogleMapsScraper:
             else:
                 stagnant_rounds = 0
                 last_count = count
-            if stagnant_rounds >= 5:
+            if stagnant_rounds >= MAX_SCROLL_STAGNANT_ROUNDS:
                 break
             self._scroll_results_panel(panel)
+
+    def _build_card_identity(self, business_data: Dict[str, object]) -> str:
+        place_id = self._clean_text(str(business_data.get("place_id") or "")).lower()
+        if place_id:
+            return f"place:{place_id}"
+        website = self._clean_text(str(business_data.get("website") or "")).lower()
+        if website:
+            return f"website:{website}"
+        name = self._clean_text(str(business_data.get("name") or "")).lower()
+        address = self._clean_text(str(business_data.get("address") or "")).lower()
+        return f"name:{name}|address:{address}"
 
     def _inner_text(self, selector: str) -> str:
         if self.page is None:
@@ -939,39 +1071,50 @@ class UniversalGoogleMapsScraper:
         self.setup_driver()
         location_info = self.determine_location_from_input(location)
         results: List[Dict[str, object]] = []
+        seen_businesses: set[str] = set()
 
         try:
-            url = self.build_search_url(keyword, location, radius)
-            logger.info("Searching Google Maps with Playwright: %s", url)
-            if progress_callback:
-                progress_callback(0, f"Opening Google Maps for {keyword} {location}".strip())
-
-            self._open_search_page(url)
-            self.handle_google_maps_ui()
-            if not self._wait_for_results_or_empty_state():
-                return []
+            self._open_best_search_page(keyword, location, radius, progress_callback=progress_callback)
 
             self.scroll_results_enhanced(progress_callback=progress_callback)
-            total_cards = min(self._get_business_cards().count(), self.max_results)
             if progress_callback:
-                progress_callback(0, f"Found {total_cards} map results. Opening business cards...")
+                progress_callback(0, f"Found map results. Opening business cards until {self.max_results} businesses are collected...")
 
-            for index in range(total_cards):
+            index = 0
+            stagnant_cards = 0
+            while len(results) < self.max_results:
                 cards = self._get_business_cards()
-                if index >= cards.count():
-                    break
+                current_count = cards.count()
+                if index >= current_count:
+                    previous_count = current_count
+                    self.scroll_results_enhanced(progress_callback=progress_callback)
+                    current_count = self._get_business_cards().count()
+                    if current_count <= previous_count:
+                        stagnant_cards += 1
+                    else:
+                        stagnant_cards = 0
+                    if index >= current_count and stagnant_cards >= 3:
+                        break
+                    if index >= current_count:
+                        continue
                 if progress_callback:
-                    progress_callback(len(results), f"Opening card {index + 1} of {total_cards}...")
+                    progress_callback(len(results), f"Opening card {index + 1} of at least {current_count} loaded results...")
                 business_data = self.scrape_business_card(cards.nth(index), index + 1, location_info)
                 if business_data:
-                    results.append(business_data)
-                    if progress_callback:
-                        progress_callback(
-                            len(results),
-                            f"Downloaded {len(results)} of {self.max_results} businesses. Last: {business_data.get('name', 'Unknown')}",
-                        )
+                    identity = self._build_card_identity(business_data)
+                    if identity not in seen_businesses:
+                        seen_businesses.add(identity)
+                        results.append(business_data)
+                        if progress_callback:
+                            progress_callback(
+                                len(results),
+                                f"Downloaded {len(results)} of {self.max_results} businesses. Last: {business_data.get('name', 'Unknown')}",
+                            )
                 if (index + 1) % 10 == 0 and results:
                     self.save_progress(results, keyword, location, f"_partial_{index + 1}")
+                if (index + 1) % 25 == 0:
+                    self.scroll_results_enhanced(progress_callback=progress_callback)
+                index += 1
                 self.human_like_delay()
 
             if progress_callback:
@@ -1056,7 +1199,7 @@ if __name__ == "__main__":
     if not keyword:
         raise SystemExit("Keyword is required.")
     location = input("Enter location (optional): ").strip()
-    max_results = int((input("Maximum results [500]: ").strip() or "500"))
+    max_results = int((input("Maximum results [1000]: ").strip() or "1000"))
     headless = input("Run in background? [y/N]: ").strip().lower() == "y"
     scraper = UniversalGoogleMapsScraper(headless=headless, max_results=min(max_results, 1000))
     rows = scraper.scrape(keyword=keyword, location=location)
