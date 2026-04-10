@@ -17,7 +17,7 @@ services:
       - key: REDIS_URL
         sync: false
       - key: ENABLE_CELERY
-        value: "true"
+        value: "false"
       - key: CELERY_BROKER_URL
         sync: false
       - key: CELERY_RESULT_BACKEND

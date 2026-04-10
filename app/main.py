@@ -432,6 +432,8 @@ def health_check():
         "status": "ok",
         "database_ready": getattr(app.state, "db_ready", False),
         "queue_backend": get_task_queue_backend(),
+        "enable_celery": os.getenv("ENABLE_CELERY", "").strip().lower(),
+        "playwright_browsers_path": os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip() or "<unset>",
     }
 
 

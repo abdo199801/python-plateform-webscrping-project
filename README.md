@@ -67,7 +67,7 @@ celery -A app.tasks worker --loglevel=info --pool=solo
 - Vercel should not be treated as the backend host for this project in its current form. The browser UI can live on Vercel, but the FastAPI API should run on a Python host such as Render or Railway.
 - The Playwright scraper needs the Chromium browser installed in production. The included Render build command installs it into a hermetic Playwright path, and the scraper can repair the browser runtime automatically if it is missing.
 - For Celery in production, point `REDIS_URL` or `CELERY_BROKER_URL` to a Redis instance and run a separate worker process with `celery -A app.tasks worker --loglevel=info --pool=solo`.
-- Set `ENABLE_CELERY=true` on both the web service and the worker only after Redis is configured and the worker is deployed.
+- Leave `ENABLE_CELERY=false` on the web service until Redis and the worker are both confirmed healthy. The worker service can exist before that, but the web service should not dispatch jobs to Celery until the queue stack is verified.
 
 ## Recommended Deploy Split
 
@@ -97,6 +97,7 @@ For the Render backend, set at least:
 ```dotenv
 DATABASE_URL=postgresql://...neon...&sslmode=require
 REDIS_URL=redis://...render-redis...
+ENABLE_CELERY=false
 CELERY_BROKER_URL=
 CELERY_RESULT_BACKEND=
 PLAYWRIGHT_BROWSERS_PATH=0
@@ -113,6 +114,7 @@ PAYPAL_CURRENCY=USD
 ```
 
 If you use a separate Render worker service, give it the same values for `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `PLAYWRIGHT_BROWSERS_PATH`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `USER_JWT_SECRET`.
+Set `ENABLE_CELERY=true` on the worker, but keep `ENABLE_CELERY=false` on the web service until you have confirmed the worker is online and Redis is reachable.
 
 The admin login connection error on Vercel happens when `/api/admin/login` is not backed by a running FastAPI API, or when the frontend is still pointing to localhost instead of the deployed backend.
 
