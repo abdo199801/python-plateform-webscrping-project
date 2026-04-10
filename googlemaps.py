@@ -2,6 +2,9 @@ import logging
 import os
 import random
 import re
+import subprocess
+import sys
+import threading
 import time
 import urllib.parse
 from dataclasses import asdict, dataclass
@@ -23,6 +26,7 @@ logger = logging.getLogger(__name__)
 PAGE_LOAD_TIMEOUT_SECONDS = 45
 RESULTS_PANEL_TIMEOUT_SECONDS = 25
 DETAIL_PANEL_TIMEOUT_SECONDS = 12
+_PLAYWRIGHT_INSTALL_LOCK = threading.Lock()
 
 
 @dataclass
@@ -215,6 +219,35 @@ class UniversalGoogleMapsScraper:
             return "chrome"
         return None
 
+    def _install_playwright_browser(self) -> None:
+        install_env = os.environ.copy()
+        install_env.setdefault("PLAYWRIGHT_BROWSERS_PATH", os.getenv("PLAYWRIGHT_BROWSERS_PATH", "0") or "0")
+        logger.warning("Playwright browser executable is missing. Installing Chromium runtime now...")
+        subprocess.run(
+            [sys.executable, "-m", "playwright", "install", "chromium"],
+            check=True,
+            env=install_env,
+        )
+
+    def _should_reinstall_browser(self, exc: Exception) -> bool:
+        message = str(exc)
+        return "Executable doesn't exist" in message or "Please run the following command to download new browsers" in message
+
+    def _launch_browser(self, launch_kwargs: Dict[str, object]):
+        if self.playwright is None:
+            self.playwright = sync_playwright().start()
+
+        try:
+            return self.playwright.chromium.launch(**launch_kwargs)
+        except PlaywrightError as exc:
+            if not self._should_reinstall_browser(exc):
+                raise
+
+            with _PLAYWRIGHT_INSTALL_LOCK:
+                self._install_playwright_browser()
+
+            return self.playwright.chromium.launch(**launch_kwargs)
+
     def setup_driver(self) -> None:
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
@@ -224,7 +257,6 @@ class UniversalGoogleMapsScraper:
         browser_binary = self._resolve_browser_binary()
         browser_channel = self._resolve_browser_channel(browser_binary)
 
-        self.playwright = sync_playwright().start()
         launch_kwargs = {
             "headless": self.headless,
             "args": [
@@ -240,7 +272,7 @@ class UniversalGoogleMapsScraper:
         elif browser_channel:
             launch_kwargs["channel"] = browser_channel
 
-        self.browser = self.playwright.chromium.launch(**launch_kwargs)
+        self.browser = self._launch_browser(launch_kwargs)
         self.context = self.browser.new_context(
             user_agent=random.choice(user_agents),
             viewport={"width": random.randint(1366, 1680), "height": random.randint(820, 980)},

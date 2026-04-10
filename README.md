@@ -10,6 +10,7 @@ This project now includes:
 - PostgreSQL persistence for scrape runs and businesses
 - A browser dashboard
 - A Playwright Google Maps scraper
+- Optional Celery + Redis queue workers for scrape jobs
 
 ## Setup
 
@@ -24,12 +25,20 @@ docker compose up -d
 
 ```powershell
 pip install -r requirements.txt
+python -m playwright install chromium
 ```
 
 4. Start the app:
 
 ```powershell
 uvicorn app.main:app --reload
+```
+
+5. Optional: start Redis and a Celery worker for background scrape processing:
+
+```powershell
+docker compose up -d redis
+celery -A app.tasks worker --loglevel=info --pool=solo
 ```
 
 5. Open `http://127.0.0.1:8000`
@@ -47,6 +56,7 @@ uvicorn app.main:app --reload
 - Tables are created automatically on startup.
 - `POST /api/scrapes` runs the Playwright scraper and then stores the results in PostgreSQL.
 - If `save_files` is `true`, the scrape also exports XLSX and CSV files using the original script behavior.
+- If `REDIS_URL` or `CELERY_BROKER_URL` is configured, scrape jobs are queued through Celery. Otherwise the API falls back to FastAPI in-process background tasks.
 
 ## Hosting Notes
 
@@ -55,7 +65,8 @@ uvicorn app.main:app --reload
 - If the frontend is served from a different host than the API, set `API_BASE_URL` to the public backend URL so browser requests go to the right server.
 - To guarantee admin login on a fresh production database, set `ADMIN_EMAIL` and `ADMIN_PASSWORD`. The app will create that admin account automatically on startup if it does not already exist.
 - Vercel should not be treated as the backend host for this project in its current form. The browser UI can live on Vercel, but the FastAPI API should run on a Python host such as Render or Railway.
-- The Playwright scraper needs the Chromium browser installed in production. The included Render build command installs it automatically.
+- The Playwright scraper needs the Chromium browser installed in production. The included Render build command installs it into a hermetic Playwright path, and the scraper can repair the browser runtime automatically if it is missing.
+- For Celery in production, point `REDIS_URL` or `CELERY_BROKER_URL` to a Redis instance and run a separate worker process with `celery -A app.tasks worker --loglevel=info --pool=solo`.
 
 ## Recommended Deploy Split
 
