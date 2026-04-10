@@ -1,4 +1,5 @@
 import logging
+import json
 import os
 import random
 import re
@@ -34,8 +35,18 @@ DETAIL_PANEL_TIMEOUT_SECONDS = 12
 _PLAYWRIGHT_INSTALL_LOCK = threading.Lock()
 DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "0"
 WEBSITE_FETCH_TIMEOUT_SECONDS = 8
-WEBSITE_FETCH_MAX_PAGES = 3
-WEBSITE_CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us"]
+WEBSITE_FETCH_MAX_PAGES = 5
+WEBSITE_CONTACT_PATHS = [
+    "/contact",
+    "/contact-us",
+    "/about",
+    "/about-us",
+    "/imprint",
+    "/legal",
+    "/support",
+    "/company",
+    "/team",
+]
 RESULT_PANEL_SELECTORS = [
     "div[role='feed']",
     "div[aria-label*='Results']",
@@ -217,6 +228,17 @@ class UniversalGoogleMapsScraper:
         self.phone_pattern = re.compile(r"(\+\d{1,3}[\s\-]?)?\(?\d{1,4}\)?[\s\-]?\d{1,4}[\s\-]?\d{1,9}")
         self.email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
         self.postal_pattern = re.compile(r"\b\d{5}(?:[-\s]\d{4})?\b|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b")
+        self.social_domains = (
+            "facebook.com",
+            "instagram.com",
+            "linkedin.com",
+            "x.com",
+            "twitter.com",
+            "tiktok.com",
+            "youtube.com",
+            "wa.me",
+            "whatsapp.com",
+        )
         self.country_aliases = self.load_country_data()
         self.city_to_country = self.load_city_data()
 
@@ -933,6 +955,90 @@ class UniversalGoogleMapsScraper:
         match = self.phone_pattern.search(cleaned)
         return self._clean_text(match.group(0)) if match else cleaned
 
+    def _extract_emails_from_text(self, text: str) -> List[str]:
+        emails: List[str] = []
+        for email in self.email_pattern.findall(text or ""):
+            cleaned = email.strip().lower().strip(".,;:)")
+            if cleaned and cleaned not in emails:
+                emails.append(cleaned)
+        return emails
+
+    def _extract_phones_from_text(self, text: str) -> List[str]:
+        phones: List[str] = []
+        for match in self.phone_pattern.finditer(text or ""):
+            candidate = self._normalize_phone(match.group(0))
+            if candidate and candidate not in phones and len(re.sub(r"\D", "", candidate)) >= 7:
+                phones.append(candidate)
+        return phones
+
+    def _merge_detail_dicts(self, base: Dict[str, str], incoming: Dict[str, str]) -> Dict[str, str]:
+        for key, value in incoming.items():
+            if value and not base.get(key):
+                base[key] = value
+        return base
+
+    def _extract_structured_data_from_html(self, html: str, base_url: str) -> Dict[str, str]:
+        info = {"email": "", "phone": "", "social_media": "", "website": "", "address": ""}
+        if not html:
+            return info
+
+        soup = BeautifulSoup(html, "html.parser")
+        social_links: List[str] = []
+        for script in soup.select("script[type='application/ld+json']"):
+            raw_json = (script.string or script.get_text(" ") or "").strip()
+            if not raw_json:
+                continue
+            try:
+                payload = json.loads(raw_json)
+            except Exception:
+                continue
+
+            nodes = payload if isinstance(payload, list) else [payload]
+            for node in nodes:
+                if not isinstance(node, dict):
+                    continue
+                email = node.get("email")
+                telephone = node.get("telephone")
+                website = node.get("url")
+                address = node.get("address")
+                same_as = node.get("sameAs") or []
+
+                if isinstance(email, str) and email:
+                    info["email"] = info["email"] or email.strip().lower()
+                if isinstance(telephone, str) and telephone:
+                    info["phone"] = info["phone"] or self._normalize_phone(telephone)
+                if isinstance(website, str) and website:
+                    info["website"] = info["website"] or self._normalize_website(website)
+                if isinstance(address, dict):
+                    info["address"] = info["address"] or self._clean_text(
+                        ", ".join(
+                            str(address.get(part, ""))
+                            for part in ["streetAddress", "addressLocality", "addressRegion", "postalCode", "addressCountry"]
+                            if address.get(part)
+                        )
+                    )
+                elif isinstance(address, str) and address:
+                    info["address"] = info["address"] or self._clean_text(address)
+
+                if isinstance(same_as, list):
+                    for href in same_as:
+                        if isinstance(href, str) and any(domain in href.lower() for domain in self.social_domains):
+                            if href not in social_links:
+                                social_links.append(href)
+
+        if social_links:
+            info["social_media"] = ", ".join(social_links[:5])
+
+        return info
+
+    def _extract_page_text_blob(self) -> str:
+        if self.page is None:
+            return ""
+        try:
+            return self.page.locator("body").inner_text(timeout=2_000) or ""
+        except Exception:
+            return ""
+
     def _fetch_url_text(self, url: str) -> Tuple[str, str]:
         request = urlrequest.Request(url, headers=self._build_request_headers())
         with urlrequest.urlopen(request, timeout=WEBSITE_FETCH_TIMEOUT_SECONDS) as response:
@@ -953,7 +1059,7 @@ class UniversalGoogleMapsScraper:
                 continue
             absolute = urllib.parse.urljoin(base_url, href)
             lowered = absolute.lower()
-            if any(path in lowered for path in WEBSITE_CONTACT_PATHS) or any(word in label.lower() for word in ["contact", "about", "support"]):
+            if any(path in lowered for path in WEBSITE_CONTACT_PATHS) or any(word in label.lower() for word in ["contact", "about", "support", "team", "company", "legal", "imprint"]):
                 if absolute not in seen:
                     links.append(absolute)
                     seen.add(absolute)
@@ -962,47 +1068,57 @@ class UniversalGoogleMapsScraper:
         return links
 
     def _extract_contact_details_from_html(self, html: str, base_url: str) -> Dict[str, str]:
-        info = {"email": "", "phone": "", "social_media": ""}
+        info = {"email": "", "phone": "", "social_media": "", "website": "", "address": ""}
         if not html:
             return info
 
-        emails: List[str] = []
-        for email in self.email_pattern.findall(html):
-            cleaned = email.strip().lower()
-            if cleaned and cleaned not in emails:
-                emails.append(cleaned)
+        emails = self._extract_emails_from_text(html)
         if emails:
             info["email"] = emails[0]
 
-        phone_candidates: List[str] = []
-        for match in self.phone_pattern.finditer(html):
-            candidate = self._normalize_phone(match.group(0))
-            if candidate and candidate not in phone_candidates and len(re.sub(r"\D", "", candidate)) >= 7:
-                phone_candidates.append(candidate)
+        phone_candidates = self._extract_phones_from_text(html)
         if phone_candidates:
             info["phone"] = phone_candidates[0]
 
         soup = BeautifulSoup(html, "html.parser")
         social_links: List[str] = []
+        website_links: List[str] = []
         for anchor in soup.select("a[href]"):
-            href = urllib.parse.urljoin(base_url, (anchor.get("href") or "").strip())
+            raw_href = (anchor.get("href") or "").strip()
+            href = urllib.parse.urljoin(base_url, raw_href)
             lowered = href.lower()
-            if any(domain in lowered for domain in ["facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "tiktok.com", "youtube.com"]):
+            if raw_href.lower().startswith("mailto:") and not info["email"]:
+                email_value = raw_href.split(":", 1)[-1].split("?", 1)[0].strip().lower()
+                if email_value:
+                    info["email"] = email_value
+            if raw_href.lower().startswith("tel:") and not info["phone"]:
+                phone_value = raw_href.split(":", 1)[-1].strip()
+                if phone_value:
+                    info["phone"] = self._normalize_phone(phone_value)
+            if any(domain in lowered for domain in self.social_domains):
                 if href not in social_links:
                     social_links.append(href)
+            elif href.startswith(("http://", "https://")) and base_url not in href and href not in website_links:
+                website_links.append(href)
         if social_links:
             info["social_media"] = ", ".join(social_links[:5])
+
+        if website_links:
+            info["website"] = website_links[0]
+
+        structured = self._extract_structured_data_from_html(html, base_url)
+        self._merge_detail_dicts(info, structured)
 
         return info
 
     def _enrich_from_website(self, website_url: str) -> Dict[str, str]:
         normalized_website = self._normalize_website(website_url)
         if not normalized_website or not normalized_website.startswith(("http://", "https://")):
-            return {"email": "", "phone": "", "social_media": ""}
+            return {"email": "", "phone": "", "social_media": "", "website": "", "address": ""}
 
         visited = set()
         queue = [normalized_website]
-        best = {"email": "", "phone": "", "social_media": ""}
+        best = {"email": "", "phone": "", "social_media": "", "website": normalized_website, "address": ""}
 
         while queue and len(visited) < WEBSITE_FETCH_MAX_PAGES:
             current_url = queue.pop(0)
@@ -1017,11 +1133,9 @@ class UniversalGoogleMapsScraper:
                 continue
 
             extracted = self._extract_contact_details_from_html(html, final_url)
-            for key, value in extracted.items():
-                if value and not best.get(key):
-                    best[key] = value
+            self._merge_detail_dicts(best, extracted)
 
-            if best.get("email") and best.get("phone") and best.get("social_media"):
+            if best.get("email") and best.get("phone") and best.get("social_media") and best.get("address"):
                 break
 
             for next_url in self._extract_contact_links_from_html(html, final_url):
@@ -1033,9 +1147,8 @@ class UniversalGoogleMapsScraper:
     def _extract_social_media_links(self) -> str:
         if self.page is None:
             return ""
-        social_domains = ("facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "tiktok.com", "youtube.com")
         links: List[str] = []
-        for domain in social_domains:
+        for domain in self.social_domains:
             locator = self.page.locator(f"a[href*='{domain}']")
             try:
                 count = min(locator.count(), 3)
@@ -1117,11 +1230,13 @@ class UniversalGoogleMapsScraper:
         website = self._first_attribute(DETAIL_WEBSITE_ATTRIBUTE_SELECTORS)
         if website and "google." not in website.lower():
             info["website"] = self._normalize_website(website)
-        if self.page is not None:
-            body = self.page.locator("body").inner_text(timeout=2_000)
-            email_match = self.email_pattern.search(body or "")
-            if email_match:
-                info["email"] = email_match.group(0)
+        body = self._extract_page_text_blob()
+        emails = self._extract_emails_from_text(body)
+        phones = self._extract_phones_from_text(body)
+        if emails:
+            info["email"] = emails[0]
+        if phones and not info["phone"]:
+            info["phone"] = phones[0]
         info["social_media"] = self._extract_social_media_links()
         return info
 
@@ -1136,6 +1251,7 @@ class UniversalGoogleMapsScraper:
             "reviews_count": 0,
             "category": "",
             "address": "",
+            "website": "",
         }
         try:
             card_text = (card.inner_text(timeout=3_000) or "").strip()
@@ -1150,6 +1266,12 @@ class UniversalGoogleMapsScraper:
             info["category"] = self._normalize_category(lines[1])
         if len(lines) >= 3:
             info["address"] = self._clean_text(lines[2])
+        try:
+            card_href = card.locator("a[href^='http']").first.get_attribute("href", timeout=1_500) or ""
+        except Exception:
+            card_href = ""
+        if card_href and "google." not in card_href.lower():
+            info["website"] = self._normalize_website(card_href)
         return info
 
     def _open_business_details(self, card: Locator) -> None:
@@ -1233,11 +1355,27 @@ class UniversalGoogleMapsScraper:
                 details = self._extract_contact_info()
                 details.update(self._extract_address_info())
                 details.update(self._extract_business_hours_and_description())
+                page_text = self._extract_page_text_blob()
+                if page_text:
+                    if not details.get("email"):
+                        page_emails = self._extract_emails_from_text(page_text)
+                        if page_emails:
+                            details["email"] = page_emails[0]
+                    if not details.get("phone"):
+                        page_phones = self._extract_phones_from_text(page_text)
+                        if page_phones:
+                            details["phone"] = page_phones[0]
                 if details.get("website"):
                     enriched = self._enrich_from_website(details["website"])
-                    for field in ("email", "phone", "social_media"):
+                    for field in ("email", "phone", "social_media", "address"):
                         if enriched.get(field) and not details.get(field):
                             details[field] = enriched[field]
+                if details.get("address") and not data.address:
+                    data.address = details["address"]
+                    parsed_address = self._split_address_parts(details["address"])
+                    for field in ("country", "city", "street", "postal_code", "state_province"):
+                        if parsed_address.get(field) and not getattr(data, field):
+                            setattr(data, field, parsed_address[field])
                 for key, value in details.items():
                     if hasattr(data, key) and value:
                         setattr(data, key, value)
