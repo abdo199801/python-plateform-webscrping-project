@@ -9,7 +9,7 @@ This project now includes:
 - A FastAPI backend
 - PostgreSQL persistence for scrape runs and businesses
 - A browser dashboard
-- The original Selenium Google Maps scraper
+- A Playwright Google Maps scraper
 
 ## Setup
 
@@ -45,7 +45,7 @@ uvicorn app.main:app --reload
 ## Notes
 
 - Tables are created automatically on startup.
-- `POST /api/scrapes` runs the Selenium scraper and then stores the results in PostgreSQL.
+- `POST /api/scrapes` runs the Playwright scraper and then stores the results in PostgreSQL.
 - If `save_files` is `true`, the scrape also exports XLSX and CSV files using the original script behavior.
 
 ## Hosting Notes
@@ -55,7 +55,7 @@ uvicorn app.main:app --reload
 - If the frontend is served from a different host than the API, set `API_BASE_URL` to the public backend URL so browser requests go to the right server.
 - To guarantee admin login on a fresh production database, set `ADMIN_EMAIL` and `ADMIN_PASSWORD`. The app will create that admin account automatically on startup if it does not already exist.
 - Vercel should not be treated as the backend host for this project in its current form. The browser UI can live on Vercel, but the FastAPI API should run on a Python host such as Render or Railway.
-- The Selenium scraper may need a containerized host or additional browser setup in production. Login, admin, and data APIs are the first pieces to move successfully.
+- The Playwright scraper needs the Chromium browser installed in production. The included Render build command installs it automatically.
 
 ## Recommended Deploy Split
 

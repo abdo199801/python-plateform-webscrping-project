@@ -28,7 +28,7 @@ This compatibility mode was kept intentionally so the original workflow continue
 - Database ORM: SQLAlchemy
 - Database: PostgreSQL in production, SQLite fallback locally
 - Frontend: static HTML, CSS, and JavaScript served by FastAPI
-- Scraping engine: Selenium
+- Scraping engine: Playwright
 - Payments: Stripe and PayPal
 - Authentication: JWT for admins and optional platform users
 
@@ -83,7 +83,7 @@ The scrape form supports:
 
 When a scrape runs, the app:
 
-1. executes the Selenium Google Maps scraping flow
+1. executes the Playwright Google Maps scraping flow
 2. persists the run in the database
 3. stores businesses found in that run
 4. optionally exports CSV and XLSX files
@@ -401,7 +401,7 @@ The practical result is:
 - separate customer auth rollout from the legacy flow with a clear feature flag
 - add automated database migrations instead of relying on startup schema repair
 - add background job processing for scraping and exports
-- containerize the Selenium runtime for more predictable hosted scraping
+- preinstall the Playwright Chromium runtime for more predictable hosted scraping
 - add automated tests for access, dashboard, lead desk, and payment flows
 
 ## Ownership and Maintenance

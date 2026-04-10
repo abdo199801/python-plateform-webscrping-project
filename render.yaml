@@ -4,12 +4,14 @@ services:
     runtime: python
     plan: free
     healthCheckPath: /api/health
-    buildCommand: pip install -r requirements.txt
+    buildCommand: pip install -r requirements.txt && python -m playwright install chromium
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     autoDeploy: true
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.11
+      - key: PLAYWRIGHT_BROWSERS_PATH
+        value: /opt/render/.cache/ms-playwright
       - key: DATABASE_URL
         sync: false
       - key: FRONTEND_URL
