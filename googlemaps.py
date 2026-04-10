@@ -55,6 +55,8 @@ BUSINESS_CARD_SELECTORS = [
 MAX_SEARCH_VARIANTS = 4
 MAX_SCROLL_STAGNANT_ROUNDS = 12
 COUNTRY_FANOUT_CITY_LIMIT = 8
+COUNTRY_BATCH_CITY_LIMIT = 16
+COUNTRY_BATCH_SIZE = 4
 
 
 @dataclass
@@ -146,7 +148,7 @@ class UniversalGoogleMapsScraper:
             return normalized_alias in tokens
         return normalized_alias in normalized_haystack
 
-    def _build_location_variants(self, location_info: Dict[str, str]) -> List[str]:
+    def _build_location_variants(self, location_info: Dict[str, str], include_country_fanout: bool = True) -> List[str]:
         variants: List[str] = []
         original = (location_info.get("original_input") or "").strip()
         city = (location_info.get("city") or "").strip()
@@ -154,7 +156,7 @@ class UniversalGoogleMapsScraper:
         country = (location_info.get("country") or "").strip()
         country_city_variants = []
 
-        if country and not city:
+        if include_country_fanout and country and not city:
             for major_city in MAJOR_CITIES.get(country, [])[:COUNTRY_FANOUT_CITY_LIMIT]:
                 country_city_variants.append(f"{major_city}, {country}")
 
@@ -175,9 +177,9 @@ class UniversalGoogleMapsScraper:
         variant_limit = COUNTRY_FANOUT_CITY_LIMIT + 1 if country and not city else MAX_SEARCH_VARIANTS
         return variants[:variant_limit]
 
-    def _build_search_queries(self, keyword: str, location: str, radius: str) -> List[str]:
+    def _build_search_queries(self, keyword: str, location: str, radius: str, include_country_fanout: bool = True) -> List[str]:
         location_info = self.determine_location_from_input(location)
-        location_variants = self._build_location_variants(location_info)
+        location_variants = self._build_location_variants(location_info, include_country_fanout=include_country_fanout)
         queries: List[str] = []
 
         base_keyword = re.sub(r"\s+", " ", (keyword or "").strip())
@@ -201,6 +203,58 @@ class UniversalGoogleMapsScraper:
 
         query_limit = max(len(location_variants) * 2, 4)
         return unique_queries[:query_limit]
+
+    def _build_search_batches(self, keyword: str, location: str, radius: str) -> List[Dict[str, object]]:
+        location_info = self.determine_location_from_input(location)
+        country = (location_info.get("country") or "").strip()
+        city = (location_info.get("city") or "").strip()
+
+        if not country or city:
+            return [
+                {
+                    "label": location_info.get("specific_location") or location or "worldwide",
+                    "location": location,
+                    "location_info": location_info,
+                    "queries": self._build_search_queries(keyword, location, radius, include_country_fanout=True),
+                }
+            ]
+
+        major_cities = MAJOR_CITIES.get(country, [])[:COUNTRY_BATCH_CITY_LIMIT]
+        batches: List[Dict[str, object]] = [
+            {
+                "label": country,
+                "location": country,
+                "location_info": location_info,
+                "queries": self._build_search_queries(keyword, country, radius, include_country_fanout=False),
+            }
+        ]
+
+        for batch_index in range(0, len(major_cities), COUNTRY_BATCH_SIZE):
+            city_chunk = major_cities[batch_index: batch_index + COUNTRY_BATCH_SIZE]
+            queries: List[str] = []
+            for major_city in city_chunk:
+                city_location = f"{major_city}, {country}"
+                queries.extend(self._build_search_queries(keyword, city_location, radius, include_country_fanout=False))
+
+            deduped_queries: List[str] = []
+            seen_queries: set[str] = set()
+            for query in queries:
+                normalized_query = self._normalize_lookup_text(query)
+                if normalized_query and normalized_query not in seen_queries:
+                    seen_queries.add(normalized_query)
+                    deduped_queries.append(query)
+
+            label = f"{country} cities {batch_index + 1}-{batch_index + len(city_chunk)}"
+            batches.append(
+                {
+                    "label": label,
+                    "location": ", ".join(city_chunk),
+                    "location_info": {**location_info, "specific_location": label},
+                    "queries": deduped_queries,
+                }
+            )
+
+        return batches
 
     def _resolve_headless_mode(self, requested_headless: bool) -> bool:
         if requested_headless:
@@ -1112,31 +1166,52 @@ class UniversalGoogleMapsScraper:
         location_info = self.determine_location_from_input(location)
         results: List[Dict[str, object]] = []
         seen_businesses: set[str] = set()
-        queries = self._build_search_queries(keyword, location, radius)
+        batches = self._build_search_batches(keyword, location, radius)
 
         try:
             last_error: Optional[Exception] = None
-            for query_index, query in enumerate(queries, start=1):
+            for batch_index, batch in enumerate(batches, start=1):
                 if len(results) >= self.max_results:
                     break
 
-                try:
-                    if not self._open_search_query(query, radius, query_index, len(queries), progress_callback=progress_callback):
+                batch_queries = batch.get("queries") or []
+                batch_location = str(batch.get("location") or location)
+                batch_location_info = batch.get("location_info") or location_info
+                batch_label = str(batch.get("label") or batch_location or "worldwide")
+                if progress_callback:
+                    progress_callback(len(results), f"Starting region batch {batch_index}/{len(batches)}: {batch_label}")
+
+                for query_index, query in enumerate(batch_queries, start=1):
+                    if len(results) >= self.max_results:
+                        break
+
+                    try:
+                        if not self._open_search_query(query, radius, query_index, len(batch_queries), progress_callback=progress_callback):
+                            continue
+                        added = self._collect_results_from_open_page(
+                            keyword,
+                            batch_location,
+                            batch_location_info,
+                            results,
+                            seen_businesses,
+                            progress_callback=progress_callback,
+                        )
+                        if progress_callback:
+                            progress_callback(
+                                len(results),
+                                f"Batch {batch_index}/{len(batches)} query {query_index}/{len(batch_queries)} finished with {added} new businesses.",
+                            )
+                    except Exception as exc:
+                        last_error = exc
+                        logger.warning(
+                            "Search query failed (batch %s/%s, query %s/%s): %s",
+                            batch_index,
+                            len(batches),
+                            query_index,
+                            len(batch_queries),
+                            exc,
+                        )
                         continue
-                    added = self._collect_results_from_open_page(
-                        keyword,
-                        location,
-                        location_info,
-                        results,
-                        seen_businesses,
-                        progress_callback=progress_callback,
-                    )
-                    if progress_callback:
-                        progress_callback(len(results), f"Query {query_index}/{len(queries)} finished with {added} new businesses.")
-                except Exception as exc:
-                    last_error = exc
-                    logger.warning("Search query failed (%s/%s): %s", query_index, len(queries), exc)
-                    continue
 
             if not results and last_error is not None:
                 raise last_error
