@@ -29,6 +29,7 @@ This compatibility mode was kept intentionally so the original workflow continue
 - Database: PostgreSQL in production, SQLite fallback locally
 - Frontend: static HTML, CSS, and JavaScript served by FastAPI
 - Scraping engine: Playwright
+- Background queue: Celery with Redis fallback to in-process jobs when Redis is not configured
 - Payments: Stripe and PayPal
 - Authentication: JWT for admins and optional platform users
 

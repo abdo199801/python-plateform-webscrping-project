@@ -45,7 +45,8 @@ from app.schemas import (
     ScrapeRunResponse,
     ScrapeSummaryResponse,
 )
-from app.services import create_scrape_run, process_scrape_run
+from app.services import create_scrape_run, update_scrape_run_progress
+from app.tasks import dispatch_scrape_run, get_task_queue_backend
 from app.payment_models import Payment, PaymentStatus, ScrapeCredit, Subscription
 from app.payment_schemas import (
     AccessStatusResponse,
@@ -427,7 +428,11 @@ app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 @app.get("/api/health")
 def health_check():
-    return {"status": "ok", "database_ready": getattr(app.state, "db_ready", False)}
+    return {
+        "status": "ok",
+        "database_ready": getattr(app.state, "db_ready", False),
+        "queue_backend": get_task_queue_backend(),
+    }
 
 
 @app.head("/api/health", include_in_schema=False)
@@ -477,7 +482,9 @@ async def create_scrape(
         )
 
     run = create_scrape_run(db, data, status="queued")
-    background_tasks.add_task(process_scrape_run, run.id, data, payload.email)
+    queue_backend = dispatch_scrape_run(background_tasks, run.id, data, payload.email)
+    if queue_backend == "celery":
+        update_scrape_run_progress(db, run.id, 0, "Queued in Redis worker...")
     queued_run = (
         db.query(ScrapeRun)
         .options(joinedload(ScrapeRun.businesses))
