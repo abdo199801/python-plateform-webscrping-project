@@ -27,6 +27,7 @@ PAGE_LOAD_TIMEOUT_SECONDS = 45
 RESULTS_PANEL_TIMEOUT_SECONDS = 25
 DETAIL_PANEL_TIMEOUT_SECONDS = 12
 _PLAYWRIGHT_INSTALL_LOCK = threading.Lock()
+DEFAULT_PLAYWRIGHT_BROWSERS_PATH = "0"
 
 
 @dataclass
@@ -208,6 +209,16 @@ class UniversalGoogleMapsScraper:
                 return candidate
         return None
 
+    def _enforce_playwright_runtime_environment(self) -> None:
+        configured_path = os.getenv("PLAYWRIGHT_BROWSERS_PATH", "").strip()
+        if configured_path != DEFAULT_PLAYWRIGHT_BROWSERS_PATH:
+            logger.info(
+                "Overriding PLAYWRIGHT_BROWSERS_PATH from %s to hermetic mode (%s).",
+                configured_path or "<unset>",
+                DEFAULT_PLAYWRIGHT_BROWSERS_PATH,
+            )
+        os.environ["PLAYWRIGHT_BROWSERS_PATH"] = DEFAULT_PLAYWRIGHT_BROWSERS_PATH
+
     def _resolve_browser_channel(self, browser_binary: Optional[str]) -> Optional[str]:
         forced_channel = os.getenv("PLAYWRIGHT_BROWSER_CHANNEL", "").strip().lower()
         if forced_channel in {"chrome", "msedge"}:
@@ -221,7 +232,7 @@ class UniversalGoogleMapsScraper:
 
     def _install_playwright_browser(self) -> None:
         install_env = os.environ.copy()
-        install_env.setdefault("PLAYWRIGHT_BROWSERS_PATH", os.getenv("PLAYWRIGHT_BROWSERS_PATH", "0") or "0")
+        install_env["PLAYWRIGHT_BROWSERS_PATH"] = DEFAULT_PLAYWRIGHT_BROWSERS_PATH
         logger.warning("Playwright browser executable is missing. Installing Chromium runtime now...")
         subprocess.run(
             [sys.executable, "-m", "playwright", "install", "chromium"],
@@ -249,6 +260,7 @@ class UniversalGoogleMapsScraper:
             return self.playwright.chromium.launch(**launch_kwargs)
 
     def setup_driver(self) -> None:
+        self._enforce_playwright_runtime_environment()
         user_agents = [
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",

@@ -5,6 +5,14 @@ import os
 from celery import Celery
 
 
+def is_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_celery_explicitly_enabled() -> bool:
+    return is_truthy(os.getenv("ENABLE_CELERY", ""))
+
+
 def get_celery_broker_url() -> str:
     return (
         os.getenv("CELERY_BROKER_URL", "").strip()
@@ -22,7 +30,9 @@ def get_celery_result_backend() -> str:
 
 
 def is_celery_enabled() -> bool:
-    return bool(os.getenv("CELERY_BROKER_URL", "").strip() or os.getenv("REDIS_URL", "").strip())
+    return is_celery_explicitly_enabled() and bool(
+        os.getenv("CELERY_BROKER_URL", "").strip() or os.getenv("REDIS_URL", "").strip()
+    )
 
 
 def get_queue_backend_name() -> str:

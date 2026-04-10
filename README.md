@@ -56,7 +56,7 @@ celery -A app.tasks worker --loglevel=info --pool=solo
 - Tables are created automatically on startup.
 - `POST /api/scrapes` runs the Playwright scraper and then stores the results in PostgreSQL.
 - If `save_files` is `true`, the scrape also exports XLSX and CSV files using the original script behavior.
-- If `REDIS_URL` or `CELERY_BROKER_URL` is configured, scrape jobs are queued through Celery. Otherwise the API falls back to FastAPI in-process background tasks.
+- Celery is enabled only when `ENABLE_CELERY=true` and Redis is configured. Otherwise the API falls back to FastAPI in-process background tasks.
 
 ## Hosting Notes
 
@@ -67,6 +67,7 @@ celery -A app.tasks worker --loglevel=info --pool=solo
 - Vercel should not be treated as the backend host for this project in its current form. The browser UI can live on Vercel, but the FastAPI API should run on a Python host such as Render or Railway.
 - The Playwright scraper needs the Chromium browser installed in production. The included Render build command installs it into a hermetic Playwright path, and the scraper can repair the browser runtime automatically if it is missing.
 - For Celery in production, point `REDIS_URL` or `CELERY_BROKER_URL` to a Redis instance and run a separate worker process with `celery -A app.tasks worker --loglevel=info --pool=solo`.
+- Set `ENABLE_CELERY=true` on both the web service and the worker only after Redis is configured and the worker is deployed.
 
 ## Recommended Deploy Split
 
