@@ -39,10 +39,17 @@ WEBSITE_CONTACT_PATHS = ["/contact", "/contact-us", "/about", "/about-us"]
 RESULT_PANEL_SELECTORS = [
     "div[role='feed']",
     "div[aria-label*='Results']",
+    "div[aria-label*='results']",
+    "div[aria-label*='Resultats']",
+    "div[aria-label*='Resultat']",
+    "div[aria-label*='Resultados']",
+    "div[aria-label*='Resultaten']",
     "div.m6QErb[aria-label*='Results']",
     "div.m6QErb.DxyBCb",
     "div.m6QErb.kA9KIf.dS8AEf",
     "div[role='main'] div.m6QErb.DxyBCb",
+    "div[role='main'] div[aria-label][tabindex='0']",
+    "div.m6QErb.XiKgde",
 ]
 BUSINESS_CARD_SELECTORS = [
     "div[role='article']",
@@ -51,6 +58,117 @@ BUSINESS_CARD_SELECTORS = [
     "div[jsaction*='pane.result']",
     "div[aria-label][role='article']",
     "div.lI9IFe",
+    "div.Nv2PK.THOPZb.CpccDe",
+    "div.Nv2PK.tH5CWc.THOPZb",
+    "div[data-result-index]",
+    "div[jslog*='mutableResult']",
+    "a[href*='/maps/place/']",
+]
+DETAIL_READY_SELECTORS = [
+    "button[data-item-id*='address']",
+    "button[data-item-id*='locatedin']",
+    "button[aria-label*='Address']",
+    "button[aria-label*='adresse']",
+    "button[aria-label*='direccion']",
+    "button[aria-label*='indirizzo']",
+    "button[aria-label*='endereco']",
+    "div[role='main'] h1",
+    "h1.DUwDvf",
+    "h1.fontHeadlineLarge",
+    "div[role='main'] [data-attrid='title']",
+]
+DETAIL_HEADING_SELECTORS = [
+    "h1",
+    "div[role='main'] h1",
+    "h1.DUwDvf",
+    "h1.fontHeadlineLarge",
+    "div[role='main'] [data-attrid='title']",
+    "div[role='main'] .fontHeadlineLarge",
+]
+DETAIL_RATING_ATTRIBUTE_SELECTORS = [
+    ("span[role='img'][aria-label*='star']", "aria-label"),
+    ("span[role='img'][aria-label*='Star']", "aria-label"),
+    ("span[aria-label*='stars']", "aria-label"),
+    ("span[aria-label*='rating']", "aria-label"),
+    ("div[role='img'][aria-label*='star']", "aria-label"),
+    ("div[aria-label*='stars']", "aria-label"),
+]
+DETAIL_RATING_TEXT_SELECTORS = [
+    "span.MW4etd",
+    "div.F7nice span[aria-hidden='true']",
+    "div.F7nice div[aria-hidden='true']",
+    "div[role='main'] span.ceNzKf",
+    "div[role='main'] span.fontBodyMedium[aria-hidden='true']",
+]
+DETAIL_REVIEW_SELECTORS = [
+    "button[jsaction*='pane.rating.category']",
+    "button[jsaction*='pane.reviewChart.moreReviews']",
+    "div.F7nice",
+    "span[aria-label*='reviews']",
+    "span[aria-label*='Reviews']",
+    "span[aria-label*='avis']",
+    "span[aria-label*='reseñas']",
+    "span[aria-label*='Bewertungen']",
+]
+DETAIL_CATEGORY_SELECTORS = [
+    "button[jsaction*='pane.rating.category']",
+    "div.DkEaL",
+    "button[jsaction*='pane.rating.moreReviews']",
+    "div[role='main'] button[jslog*='category']",
+    "div[role='main'] span.DkEaL",
+    "div[role='main'] .fontBodyMedium span",
+]
+DETAIL_HOURS_SELECTORS = [
+    "div[aria-label*='Hours']",
+    "div[aria-label*='hours']",
+    "div[aria-label*='Open']",
+    "div[aria-label*='open']",
+    "div[aria-label*='Horaire']",
+    "div[aria-label*='Horario']",
+    "table.eK4R0e tbody",
+    "div.OMl5r",
+    "div.t39EBf",
+]
+DETAIL_DESCRIPTION_SELECTORS = [
+    "div.PYvSYb",
+    "div.fontBodyMedium span",
+    "div[role='main'] span[jslog]",
+    "div[role='main'] span",
+    "div[role='main'] div.PYvSYb",
+    "div[role='main'] div.WeS02d",
+]
+DETAIL_PHONE_TEXT_SELECTORS = [
+    "button[data-item-id*='phone']",
+    "button[data-item-id*='phone:tel']",
+    "button[aria-label*='Phone']",
+    "button[aria-label*='phone']",
+    "button[aria-label*='Telephone']",
+    "button[aria-label*='telephone']",
+    "button[aria-label*='Tel']",
+    "a[href^='tel:']",
+    "div[role='main'] a[href^='tel:']",
+]
+DETAIL_WEBSITE_ATTRIBUTE_SELECTORS = [
+    ("a[data-item-id*='authority']", "href"),
+    ("a[data-item-id*='menu']", "href"),
+    ("a[aria-label*='Website']", "href"),
+    ("a[aria-label*='website']", "href"),
+    ("a[aria-label*='site web']", "href"),
+    ("a[aria-label*='sitio web']", "href"),
+    ("a[aria-label*='webseite']", "href"),
+    ("div[role='main'] a[href^='http']", "href"),
+    ("a[href^='http']", "href"),
+]
+DETAIL_ADDRESS_TEXT_SELECTORS = [
+    "button[data-item-id*='address']",
+    "button[data-item-id*='locatedin']",
+    "div[role='main'] button[aria-label*='Address']",
+    "button[aria-label*='Address']",
+    "button[aria-label*='address']",
+    "button[aria-label*='adresse']",
+    "button[aria-label*='direccion']",
+    "button[aria-label*='indirizzo']",
+    "button[aria-label*='endereco']",
 ]
 MAX_SEARCH_VARIANTS = 4
 MAX_SCROLL_STAGNANT_ROUNDS = 12
@@ -773,14 +891,23 @@ class UniversalGoogleMapsScraper:
         return ""
 
     def _first_text(self, selectors: List[str], minimum_length: int = 1) -> str:
+        seen: set[str] = set()
         for selector in selectors:
+            if selector in seen:
+                continue
+            seen.add(selector)
             value = self._inner_text(selector)
             if value and len(value.strip()) >= minimum_length:
                 return value.strip()
         return ""
 
     def _first_attribute(self, selector_attribute_pairs: List[Tuple[str, str]]) -> str:
+        seen: set[Tuple[str, str]] = set()
         for selector, attribute in selector_attribute_pairs:
+            key = (selector, attribute)
+            if key in seen:
+                continue
+            seen.add(key)
             value = self._attribute(selector, attribute)
             if value:
                 return value
@@ -975,18 +1102,8 @@ class UniversalGoogleMapsScraper:
         return self._clean_text(cleaned)
 
     def _extract_business_hours_and_description(self) -> Dict[str, str]:
-        hours = self._first_text([
-            "div[aria-label*='Hours']",
-            "table.eK4R0e tbody",
-            "div.OMl5r",
-            "div[aria-label*='Open']",
-        ])
-        description = self._first_text([
-            "div.PYvSYb",
-            "div.fontBodyMedium span",
-            "div[role='main'] span[jslog]",
-            "div[role='main'] span",
-        ], minimum_length=20)
+        hours = self._first_text(DETAIL_HOURS_SELECTORS)
+        description = self._first_text(DETAIL_DESCRIPTION_SELECTORS, minimum_length=20)
         return {
             "business_hours": hours.replace("\n", " | ") if hours else "",
             "description": description if len(description) > 20 else "",
@@ -994,18 +1111,10 @@ class UniversalGoogleMapsScraper:
 
     def _extract_contact_info(self) -> Dict[str, str]:
         info = {"phone": "", "website": "", "email": "", "social_media": ""}
-        phone_text = self._first_text([
-            "button[data-item-id*='phone']",
-            "button[aria-label*='Phone']",
-            "a[href^='tel:']",
-        ])
+        phone_text = self._first_text(DETAIL_PHONE_TEXT_SELECTORS)
         if phone_text and self.phone_pattern.search(phone_text):
             info["phone"] = self._normalize_phone(phone_text)
-        website = self._first_attribute([
-            ("a[data-item-id*='authority']", "href"),
-            ("a[aria-label*='Website']", "href"),
-            ("a[href^='http']", "href"),
-        ])
+        website = self._first_attribute(DETAIL_WEBSITE_ATTRIBUTE_SELECTORS)
         if website and "google." not in website.lower():
             info["website"] = self._normalize_website(website)
         if self.page is not None:
@@ -1017,11 +1126,7 @@ class UniversalGoogleMapsScraper:
         return info
 
     def _extract_address_info(self) -> Dict[str, str]:
-        address = self._first_text([
-            "button[data-item-id*='address']",
-            "div[role='main'] button[aria-label*='Address']",
-            "button[aria-label*='Address']",
-        ], minimum_length=6)
+        address = self._first_text(DETAIL_ADDRESS_TEXT_SELECTORS, minimum_length=6)
         return self._split_address_parts(address)
 
     def extract_basic_card_info(self, card: Locator) -> Dict[str, object]:
@@ -1063,13 +1168,13 @@ class UniversalGoogleMapsScraper:
             card.click(timeout=4_000, force=True)
         self.page.wait_for_function(
             """
-            (previous) => {
-                const addressButton = document.querySelector("button[data-item-id*='address']");
+            ({ previous, selectors }) => {
+                const readyNode = selectors.some((selector) => Boolean(document.querySelector(selector)));
                 const heading = document.querySelector("h1");
-                return window.location.href !== previous || Boolean(addressButton) || Boolean(heading);
+                return window.location.href !== previous || readyNode || Boolean(heading);
             }
             """,
-            arg=previous_url,
+            arg={"previous": previous_url, "selectors": DETAIL_READY_SELECTORS},
             timeout=DETAIL_PANEL_TIMEOUT_SECONDS * 1000,
         )
         self.human_like_delay(1.0, 1.8)
@@ -1109,30 +1214,19 @@ class UniversalGoogleMapsScraper:
                     data.longitude = longitude
                     data.place_id = self.extract_place_id(current_url)
 
-                detail_name = self._first_text(["h1", "div[role='main'] h1", "h1.DUwDvf"], minimum_length=2)
+                detail_name = self._first_text(DETAIL_HEADING_SELECTORS, minimum_length=2)
                 if detail_name:
                     data.name = self._clean_text(detail_name)
 
-                rating_text = self._first_attribute([
-                    ("span[role='img'][aria-label*='star']", "aria-label"),
-                    ("span[aria-label*='stars']", "aria-label"),
-                ]) or self._first_text(["span.MW4etd", "div.F7nice span[aria-hidden='true']"])
+                rating_text = self._first_attribute(DETAIL_RATING_ATTRIBUTE_SELECTORS) or self._first_text(DETAIL_RATING_TEXT_SELECTORS)
                 if rating_text:
                     data.rating = self._extract_rating(rating_text)
 
-                review_text = self._first_text([
-                    "button[jsaction*='pane.rating.category']",
-                    "div.F7nice",
-                    "span[aria-label*='reviews']",
-                ]) or rating_text
+                review_text = self._first_text(DETAIL_REVIEW_SELECTORS) or rating_text
                 if review_text:
                     data.reviews_count = self._extract_reviews_count(review_text)
 
-                category = self._first_text([
-                    "button[jsaction*='pane.rating.category']",
-                    "div.DkEaL",
-                    "button[jsaction*='pane.rating.moreReviews']",
-                ])
+                category = self._first_text(DETAIL_CATEGORY_SELECTORS)
                 if category:
                     data.category = self._normalize_category(category.split("\n")[0].strip())
 
