@@ -95,16 +95,23 @@ For the Render backend, set at least:
 
 ```dotenv
 DATABASE_URL=postgresql://...neon...&sslmode=require
+REDIS_URL=redis://...render-redis...
+CELERY_BROKER_URL=
+CELERY_RESULT_BACKEND=
+PLAYWRIGHT_BROWSERS_PATH=0
 FRONTEND_URL=https://your-frontend.vercel.app
 ALLOWED_ORIGINS=https://your-frontend.vercel.app
 API_BASE_URL=https://your-render-service.onrender.com
 ADMIN_EMAIL=admin@yourdomain.com
 ADMIN_PASSWORD=replace-with-a-strong-password
+USER_JWT_SECRET=replace-with-a-strong-secret
 PAYPAL_CLIENT_ID=...
 PAYPAL_CLIENT_SECRET=...
 PAYPAL_ENVIRONMENT=sandbox
 PAYPAL_CURRENCY=USD
 ```
+
+If you use a separate Render worker service, give it the same values for `DATABASE_URL`, `REDIS_URL`, `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND`, `PLAYWRIGHT_BROWSERS_PATH`, `ADMIN_EMAIL`, `ADMIN_PASSWORD`, and `USER_JWT_SECRET`.
 
 The admin login connection error on Vercel happens when `/api/admin/login` is not backed by a running FastAPI API, or when the frontend is still pointing to localhost instead of the deployed backend.
 
