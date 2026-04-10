@@ -9,6 +9,7 @@ const leadSummaryEl = document.getElementById("leadSummary");
 const leadFilterFormEl = document.getElementById("leadFilterForm");
 const savedSearchNameEl = document.getElementById("savedSearchName");
 const savedSearchesEl = document.getElementById("savedSearches");
+const runFilterFormEl = document.getElementById("runFilterForm");
 const runsPaginationEl = document.getElementById("runsPagination");
 const businessesPaginationEl = document.getElementById("businessesPagination");
 const businessExportsEl = document.getElementById("businessExports");
@@ -86,6 +87,7 @@ let paymentConfig = {
 };
 let accessState = null;
 const runListState = { page: 1, pageSize: 6 };
+const runFiltersState = { search: "", status: "" };
 const DEFAULT_MAX_RESULTS_PER_SCRAPE = 500;
 const ENTERPRISE_MAX_RESULTS_PER_SCRAPE = 1000;
 const businessListState = {
@@ -98,6 +100,7 @@ const businessListState = {
   leadStatus: "",
   tag: "",
   savedOnly: false,
+  scrapeRunId: null,
 };
 let latestRunId = null;
 let dashboardState = null;
@@ -467,6 +470,9 @@ function buildBusinessQueryString() {
   if (businessListState.savedOnly) {
     params.set("saved_only", "true");
   }
+  if (businessListState.scrapeRunId) {
+    params.set("scrape_run_id", String(businessListState.scrapeRunId));
+  }
 
   return params.toString();
 }
@@ -498,8 +504,33 @@ function buildBusinessExportQueryString() {
   if (businessListState.savedOnly) {
     params.set("saved_only", "true");
   }
+  if (businessListState.scrapeRunId) {
+    params.set("scrape_run_id", String(businessListState.scrapeRunId));
+  }
 
   return params.toString();
+}
+
+function syncRunFilterForm() {
+  if (!runFilterFormEl) {
+    return;
+  }
+
+  runFilterFormEl.elements.search.value = runFiltersState.search;
+  runFilterFormEl.elements.status.value = runFiltersState.status;
+}
+
+function getRunFilterPayload() {
+  const data = new FormData(runFilterFormEl);
+  return {
+    search: (data.get("search") || "").toString().trim(),
+    status: (data.get("status") || "").toString().trim(),
+  };
+}
+
+function updateRunFilterState(nextState = {}) {
+  runFiltersState.search = nextState.search || "";
+  runFiltersState.status = nextState.status || "";
 }
 
 function syncLeadFilterForm() {
@@ -754,6 +785,56 @@ function buildExportButtons(runId, variant = "inline") {
     .join("");
 }
 
+function countContactableBusinesses(run) {
+  const businesses = Array.isArray(run.businesses) ? run.businesses : [];
+  return businesses.filter((business) => business.phone || business.email || business.website).length;
+}
+
+function getRunSummaryLabel(run) {
+  const businesses = Array.isArray(run.businesses) ? run.businesses : [];
+  if (!businesses.length) {
+    return "No businesses stored yet";
+  }
+
+  const contactable = countContactableBusinesses(run);
+  return `${formatNumber(businesses.length)} businesses stored • ${formatNumber(contactable)} with contact details`;
+}
+
+function fillScrapeFormFromRun(run) {
+  formEl.querySelector('input[name="keyword"]').value = run.keyword || "";
+  formEl.querySelector('input[name="location"]').value = run.location || "";
+  formEl.querySelector('input[name="radius"]').value = run.radius || "10000";
+  formEl.querySelector('input[name="max_results"]').value = String(run.max_results || 25);
+  formEl.querySelector('input[name="headless"]').checked = Boolean(run.headless);
+  formEl.querySelector('input[name="email"]').value = userEmail || formEl.querySelector('input[name="email"]').value;
+  updateMapPreview(run.keyword || "", run.location || "");
+}
+
+async function focusBusinessesForRun(run) {
+  businessListState.scrapeRunId = run.id;
+  businessListState.page = 1;
+  await loadBusinesses();
+  document.getElementById("businesses").scrollIntoView({ behavior: "smooth", block: "start" });
+  setStatus(`Showing businesses from run #${run.id}: ${run.keyword}.`);
+}
+
+async function deleteRun(runId) {
+  const confirmed = window.confirm("Delete this saved run and all businesses attached to it?");
+  if (!confirmed) {
+    return;
+  }
+
+  const response = await fetch(`/api/scrapes/${runId}`, { method: "DELETE" });
+  const data = await readJsonResponse(response);
+  if (!response.ok) {
+    throw new Error(data?.detail || "Failed to delete scrape run");
+  }
+
+  if (businessListState.scrapeRunId === runId) {
+    businessListState.scrapeRunId = null;
+  }
+}
+
 function buildAllDataExportButtons(variant = "toolbar") {
   const queryString = buildBusinessExportQueryString();
 
@@ -912,12 +993,14 @@ function renderRuns(runs, pagination) {
       const resultsLine = progressMeta
         ? progressMeta.targetLabel
         : `${formatNumber(run.total_results)} saved businesses`;
+      const runSummaryLabel = getRunSummaryLabel(run);
 
       return `
         <article class="run-card" data-run-status="${escapeHtml(runStatus)}" data-created-at="${escapeHtml(run.created_at)}" data-max-results="${escapeHtml(String(run.max_results))}" data-processed-results="${escapeHtml(String(run.processed_results || 0))}" data-progress-message="${escapeHtml(run.progress_message || "")}">
           <h3>${escapeHtml(run.keyword)}</h3>
           <p>${escapeHtml(run.location || "Worldwide")}</p>
           <p class="meta">${resultsLine}</p>
+          <p class="meta">${escapeHtml(runSummaryLabel)}</p>
           <p class="meta">Radius: ${escapeHtml(run.radius)} | Max: ${run.max_results}</p>
           <p class="meta">Mode: ${run.headless ? "Background browser" : "Standard browser"}</p>
           <p class="meta">Status: ${escapeHtml((run.status || "queued").toUpperCase())}</p>
@@ -930,6 +1013,9 @@ function renderRuns(runs, pagination) {
           <p class="meta">${formatDate(run.created_at)}</p>
           <div class="run-actions">
             <button type="button" class="secondary map-preview-button" data-map-preview data-keyword="${escapeHtml(run.keyword)}" data-location="${escapeHtml(run.location || "")}">Preview Map</button>
+            <button type="button" class="secondary" data-run-businesses="${run.id}">View Businesses</button>
+            <button type="button" class="secondary" data-run-again="${run.id}">Run Again</button>
+            <button type="button" class="secondary danger-button" data-delete-run="${run.id}">Delete</button>
             ${run.status === "completed" ? buildExportButtons(run.id) : ""}
           </div>
         </article>
@@ -952,6 +1038,43 @@ function renderRuns(runs, pagination) {
   runsEl.querySelectorAll("[data-map-preview]").forEach((button) => {
     button.addEventListener("click", () => {
       previewRunMap(button.dataset.keyword || "", button.dataset.location || "");
+    });
+  });
+
+  runsEl.querySelectorAll("[data-run-businesses]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const run = runs.find((item) => item.id === Number(button.dataset.runBusinesses));
+      if (!run) {
+        return;
+      }
+      await focusBusinessesForRun(run);
+    });
+  });
+
+  runsEl.querySelectorAll("[data-run-again]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const run = runs.find((item) => item.id === Number(button.dataset.runAgain));
+      if (!run) {
+        return;
+      }
+      fillScrapeFormFromRun(run);
+      document.getElementById("scraper").scrollIntoView({ behavior: "smooth", block: "start" });
+      setStatus(`Loaded run #${run.id} back into the scraper form.`);
+    });
+  });
+
+  runsEl.querySelectorAll("[data-delete-run]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      button.disabled = true;
+      try {
+        await deleteRun(Number(button.dataset.deleteRun));
+        await Promise.all([loadRuns(), loadBusinesses(), loadInsights()]);
+        setStatus("Saved run deleted.");
+      } catch (error) {
+        setStatus(error.message, true);
+      } finally {
+        button.disabled = false;
+      }
     });
   });
 }
@@ -1297,7 +1420,18 @@ async function loadPaymentConfig() {
 }
 
 async function loadRuns() {
-  const response = await fetch(`/api/scrapes?page=${runListState.page}&page_size=${runListState.pageSize}`);
+  const params = new URLSearchParams({
+    page: String(runListState.page),
+    page_size: String(runListState.pageSize),
+  });
+  if (runFiltersState.search) {
+    params.set("search", runFiltersState.search);
+  }
+  if (runFiltersState.status) {
+    params.set("status", runFiltersState.status);
+  }
+
+  const response = await fetch(`/api/scrapes?${params.toString()}`);
   if (!response.ok) {
     throw new Error("Failed to load scrape runs");
   }
@@ -1606,6 +1740,30 @@ document.getElementById("refresh-runs").addEventListener("click", async () => {
   }
 });
 
+runFilterFormEl.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  updateRunFilterState(getRunFilterPayload());
+  runListState.page = 1;
+  try {
+    await loadRuns();
+    setStatus("Saved runs filtered.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
+document.getElementById("clearRunFilters").addEventListener("click", async () => {
+  updateRunFilterState({ search: "", status: "" });
+  syncRunFilterForm();
+  runListState.page = 1;
+  try {
+    await loadRuns();
+    setStatus("Saved run filters cleared.");
+  } catch (error) {
+    setStatus(error.message, true);
+  }
+});
+
 document.getElementById("refresh-businesses").addEventListener("click", async () => {
   try {
     await loadBusinesses();
@@ -1759,6 +1917,7 @@ updateMapPreview(
 renderBusinessExportToolbar();
 renderDashboardEmpty("Save your company profile to unlock the personal dashboard and self-service subscription controls.");
 syncLeadFilterForm();
+syncRunFilterForm();
 renderLeadSummary({ total: 0, active: 0, archived: 0, counts: {} });
 renderSavedSearches([]);
 updateAuthUi(null);

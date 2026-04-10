@@ -560,6 +560,8 @@ def build_business_query(
 @app.get("/api/scrapes", response_model=list[ScrapeRunResponse] | PaginatedScrapeRunsResponse)
 def list_scrape_runs(
     db: Session = Depends(get_db),
+    search: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
     page: Optional[int] = Query(default=None, ge=1),
     page_size: int = Query(default=6, ge=1, le=50),
 ):
@@ -568,6 +570,18 @@ def list_scrape_runs(
         .options(joinedload(ScrapeRun.businesses))
         .order_by(ScrapeRun.created_at.desc())
     )
+
+    if search:
+        pattern = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                ScrapeRun.keyword.ilike(pattern),
+                ScrapeRun.location.ilike(pattern),
+            )
+        )
+
+    if status:
+        query = query.filter(ScrapeRun.status == status.strip().lower())
 
     if page is None:
         return query.all()
@@ -582,6 +596,7 @@ def list_scrape_runs(
 def list_businesses(
     db: Session = Depends(get_db),
     current_user=Depends(get_optional_platform_user),
+    scrape_run_id: Optional[int] = Query(default=None),
     email: Optional[str] = Query(default=None),
     search: Optional[str] = Query(default=None),
     city: Optional[str] = Query(default=None),
@@ -606,6 +621,9 @@ def list_businesses(
         tag=tag,
         saved_only=saved_only,
     )
+
+    if scrape_run_id is not None:
+        query = query.filter(Business.scrape_run_id == scrape_run_id)
 
     if page is None:
         items = query.limit(limit).all()
@@ -687,6 +705,30 @@ def get_business(business_id: int, db: Session = Depends(get_db)):
     if not business:
         raise HTTPException(status_code=404, detail="Business not found")
     return business
+
+
+@app.get("/api/scrapes/{run_id}", response_model=ScrapeRunResponse)
+def get_scrape_run(run_id: int, db: Session = Depends(get_db)):
+    run = (
+        db.query(ScrapeRun)
+        .options(joinedload(ScrapeRun.businesses))
+        .filter(ScrapeRun.id == run_id)
+        .first()
+    )
+    if not run:
+        raise HTTPException(status_code=404, detail="Scrape run not found")
+    return run
+
+
+@app.delete("/api/scrapes/{run_id}")
+def delete_scrape_run(run_id: int, db: Session = Depends(get_db)):
+    run = db.query(ScrapeRun).filter(ScrapeRun.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Scrape run not found")
+
+    db.delete(run)
+    db.commit()
+    return {"status": "deleted", "id": run_id}
 
 
 @app.post("/api/leads", response_model=LeadRecordResponse)

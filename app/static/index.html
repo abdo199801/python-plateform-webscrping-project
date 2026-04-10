@@ -344,6 +344,26 @@
         <h2>Saved Runs</h2>
         <button id="refresh-runs" type="button" class="secondary">Refresh</button>
       </div>
+      <form id="runFilterForm" class="run-filter-bar">
+        <label>
+          Search Runs
+          <input name="search" placeholder="Keyword or location">
+        </label>
+        <label>
+          Status
+          <select name="status">
+            <option value="">All statuses</option>
+            <option value="queued">Queued</option>
+            <option value="running">Running</option>
+            <option value="completed">Completed</option>
+            <option value="failed">Failed</option>
+          </select>
+        </label>
+        <div class="lead-filter-actions">
+          <button type="submit">Apply</button>
+          <button id="clearRunFilters" type="button" class="secondary">Clear</button>
+        </div>
+      </form>
       <div id="runs" class="cards"></div>
       <div class="pagination-bar" id="runsPagination"></div>
     </section>

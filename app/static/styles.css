@@ -599,6 +599,18 @@ button:disabled {
   min-height: 150px;
 }
 
+.run-filter-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(180px, 0.7fr) auto;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 16px;
+}
+
+.run-card .meta {
+  line-height: 1.45;
+}
+
 .run-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1137,12 +1149,14 @@ a {
 
   .download-toolbar,
   .run-actions,
+  .run-filter-bar,
   .saved-search-toolbar,
   .lead-filter-actions {
     width: 100%;
   }
 
   .saved-search-toolbar,
+  .run-filter-bar,
   .lead-filter-actions {
     display: grid;
     grid-template-columns: 1fr;
