@@ -18,6 +18,7 @@ import pandas as pd
 from bs4 import BeautifulSoup
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import Page, Locator, sync_playwright
+from scraper_config.world_locations import ALL_COUNTRIES, COUNTRY_VARIATIONS, MAJOR_CITIES
 
 
 logging.basicConfig(
@@ -53,6 +54,7 @@ BUSINESS_CARD_SELECTORS = [
 ]
 MAX_SEARCH_VARIANTS = 4
 MAX_SCROLL_STAGNANT_ROUNDS = 12
+COUNTRY_FANOUT_CITY_LIMIT = 8
 
 
 @dataclass
@@ -96,6 +98,7 @@ class UniversalGoogleMapsScraper:
         self.email_pattern = re.compile(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
         self.postal_pattern = re.compile(r"\b\d{5}(?:[-\s]\d{4})?\b|\b[A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2}\b")
         self.country_aliases = self.load_country_data()
+        self.city_to_country = self.load_city_data()
 
         self.config_dir = "scraper_config"
         self.cache_dir = "cache"
@@ -129,6 +132,10 @@ class UniversalGoogleMapsScraper:
     def _location_parts_from_input(self, location_input: str) -> List[str]:
         return [part.strip() for part in re.split(r"[,;/|-]", location_input or "") if part.strip()]
 
+    def _infer_country_from_city(self, city: str) -> str:
+        normalized_city = self._normalize_lookup_text(city)
+        return self.city_to_country.get(normalized_city, "")
+
     def _matches_country_alias(self, haystack: str, alias: str) -> bool:
         normalized_haystack = self._normalize_lookup_text(haystack)
         normalized_alias = self._normalize_lookup_text(alias)
@@ -145,6 +152,11 @@ class UniversalGoogleMapsScraper:
         city = (location_info.get("city") or "").strip()
         state = (location_info.get("state_province") or "").strip()
         country = (location_info.get("country") or "").strip()
+        country_city_variants = []
+
+        if country and not city:
+            for major_city in MAJOR_CITIES.get(country, [])[:COUNTRY_FANOUT_CITY_LIMIT]:
+                country_city_variants.append(f"{major_city}, {country}")
 
         for candidate in [
             original,
@@ -152,6 +164,7 @@ class UniversalGoogleMapsScraper:
             ", ".join(part for part in [city, country] if part),
             " ".join(part for part in [city, state, country] if part),
             " ".join(part for part in [city, country] if part),
+            *country_city_variants,
         ]:
             cleaned = re.sub(r"\s+", " ", (candidate or "").strip())
             ascii_variant = unicodedata.normalize("NFKD", cleaned).encode("ascii", "ignore").decode("ascii").strip()
@@ -159,7 +172,8 @@ class UniversalGoogleMapsScraper:
                 if variant and variant not in variants:
                     variants.append(variant)
 
-        return variants[:MAX_SEARCH_VARIANTS]
+        variant_limit = COUNTRY_FANOUT_CITY_LIMIT + 1 if country and not city else MAX_SEARCH_VARIANTS
+        return variants[:variant_limit]
 
     def _build_search_queries(self, keyword: str, location: str, radius: str) -> List[str]:
         location_info = self.determine_location_from_input(location)
@@ -185,7 +199,8 @@ class UniversalGoogleMapsScraper:
                 seen.add(normalized)
                 unique_queries.append(query)
 
-        return unique_queries[: max(MAX_SEARCH_VARIANTS * 2, 4)]
+        query_limit = max(len(location_variants) * 2, 4)
+        return unique_queries[:query_limit]
 
     def _resolve_headless_mode(self, requested_headless: bool) -> bool:
         if requested_headless:
@@ -198,75 +213,21 @@ class UniversalGoogleMapsScraper:
         return False
 
     def load_country_data(self) -> Dict[str, List[str]]:
-        return {
-            "Afghanistan": ["AFG"],
-            "Albania": ["ALB"],
-            "Algeria": ["DZ", "DZA"],
-            "Andorra": ["AND"],
-            "Angola": ["AGO"],
-            "Argentina": ["AR", "ARG"],
-            "Australia": ["AU", "AUS"],
-            "Austria": ["AT", "AUT"],
-            "Bahrain": ["BHR"],
-            "Bangladesh": ["BD", "BGD"],
-            "Belgium": ["BE", "BEL"],
-            "Brazil": ["BR", "BRA"],
-            "Canada": ["CA", "CAN"],
-            "Chile": ["CL", "CHL"],
-            "China": ["CN", "CHN"],
-            "Colombia": ["CO", "COL"],
-            "Czech Republic": ["CZ", "CZE"],
-            "Denmark": ["DK", "DNK"],
-            "Egypt": ["EG", "EGY"],
-            "Finland": ["FI", "FIN"],
-            "France": ["FR", "FRA"],
-            "Germany": ["DE", "DEU"],
-            "Greece": ["GR", "GRC"],
-            "Hong Kong": ["HK", "HKG"],
-            "India": ["IN", "IND"],
-            "Indonesia": ["ID", "IDN"],
-            "Iran": ["IR", "IRN"],
-            "Iraq": ["IQ", "IRQ"],
-            "Ireland": ["IE", "IRL"],
-            "Israel": ["IL", "ISR"],
-            "Italy": ["IT", "ITA"],
-            "Japan": ["JP", "JPN"],
-            "Jordan": ["JO", "JOR"],
-            "Kazakhstan": ["KZ", "KAZ"],
-            "Kenya": ["KE", "KEN"],
-            "Kuwait": ["KW", "KWT"],
-            "Lebanon": ["LB", "LBN"],
-            "Malaysia": ["MY", "MYS"],
-            "Mexico": ["MX", "MEX"],
-            "Morocco": ["MA", "MAR", "Maroc"],
-            "Netherlands": ["NL", "NLD"],
-            "New Zealand": ["NZ", "NZL"],
-            "Nigeria": ["NG", "NGA"],
-            "Norway": ["NO", "NOR"],
-            "Oman": ["OM", "OMN"],
-            "Pakistan": ["PK", "PAK"],
-            "Philippines": ["PH", "PHL"],
-            "Poland": ["PL", "POL"],
-            "Portugal": ["PT", "PRT"],
-            "Qatar": ["QA", "QAT"],
-            "Romania": ["RO", "ROU"],
-            "Russia": ["RU", "RUS"],
-            "Saudi Arabia": ["SA", "SAU"],
-            "Singapore": ["SG", "SGP"],
-            "South Africa": ["ZA", "ZAF"],
-            "South Korea": ["KR", "KOR"],
-            "Spain": ["ES", "ESP"],
-            "Sweden": ["SE", "SWE"],
-            "Switzerland": ["CH", "CHE"],
-            "Taiwan": ["TW", "TWN"],
-            "Thailand": ["TH", "THA"],
-            "Turkey": ["TR", "TUR"],
-            "Ukraine": ["UA", "UKR"],
-            "United Arab Emirates": ["AE", "ARE", "UAE"],
-            "United Kingdom": ["GB", "GBR", "UK"],
-            "United States": ["US", "USA"],
-            "Vietnam": ["VN", "VNM"],
-        }
+        aliases: Dict[str, List[str]] = {}
+        for iso_code, country_name in ALL_COUNTRIES.items():
+            aliases.setdefault(country_name, []).append(iso_code)
+
+        for variation, canonical_country in COUNTRY_VARIATIONS.items():
+            aliases.setdefault(canonical_country, []).append(variation)
+
+        return {country: sorted(set(values)) for country, values in aliases.items()}
+
+    def load_city_data(self) -> Dict[str, str]:
+        city_map: Dict[str, str] = {}
+        for country, cities in MAJOR_CITIES.items():
+            for city in cities:
+                city_map[self._normalize_lookup_text(city)] = country
+        return city_map
 
     def determine_location_from_input(self, location_input: str) -> Dict[str, str]:
         location_info = {
@@ -296,6 +257,9 @@ class UniversalGoogleMapsScraper:
                     break
             if not location_info["country"]:
                 location_info["city"] = normalized
+                inferred_country = self._infer_country_from_city(normalized)
+                if inferred_country:
+                    location_info["country"] = inferred_country
 
         lowered = self._normalize_lookup_text(normalized)
         for country, codes in self.country_aliases.items():
@@ -306,6 +270,11 @@ class UniversalGoogleMapsScraper:
 
         if location_info["country"]:
             location_info["country"] = self._canonical_country_name(location_info["country"])
+
+        if location_info["city"] and not location_info["country"]:
+            inferred_country = self._infer_country_from_city(location_info["city"])
+            if inferred_country:
+                location_info["country"] = inferred_country
 
         if location_info["city"] and not location_info["specific_location"]:
             location_info["specific_location"] = ", ".join(
@@ -486,6 +455,73 @@ class UniversalGoogleMapsScraper:
         if last_error is not None:
             raise last_error
         raise RuntimeError("Google Maps did not return visible results for any search query variant.")
+
+    def _open_search_query(self, query: str, radius: str, query_index: int, total_queries: int, progress_callback=None) -> bool:
+        encoded_query = "+".join(urllib.parse.quote_plus(term) for term in [query] if term)
+        url = f"https://www.google.com/maps/search/{encoded_query}/?hl=en&gl=us"
+        if radius and radius != "10000":
+            url = f"{url}&radius={urllib.parse.quote_plus(radius)}"
+        logger.info("Searching Google Maps with Playwright (%s/%s): %s", query_index, total_queries, url)
+        if progress_callback:
+            progress_callback(0, f"Opening Google Maps query {query_index}/{total_queries}: {query}")
+
+        self._open_search_page(url)
+        self.handle_google_maps_ui()
+        return self._wait_for_results_or_empty_state()
+
+    def _collect_results_from_open_page(
+        self,
+        keyword: str,
+        location: str,
+        location_info: Dict[str, str],
+        results: List[Dict[str, object]],
+        seen_businesses: set[str],
+        progress_callback=None,
+    ) -> int:
+        start_count = len(results)
+        self.scroll_results_enhanced(progress_callback=progress_callback)
+        if progress_callback:
+            progress_callback(len(results), f"Loaded map results for {location_info.get('specific_location') or location or 'worldwide'}. Opening business cards...")
+
+        index = 0
+        stagnant_cards = 0
+        while len(results) < self.max_results:
+            cards = self._get_business_cards()
+            current_count = cards.count()
+            if index >= current_count:
+                previous_count = current_count
+                self.scroll_results_enhanced(progress_callback=progress_callback)
+                current_count = self._get_business_cards().count()
+                if current_count <= previous_count:
+                    stagnant_cards += 1
+                else:
+                    stagnant_cards = 0
+                if index >= current_count and stagnant_cards >= 3:
+                    break
+                if index >= current_count:
+                    continue
+
+            if progress_callback:
+                progress_callback(len(results), f"Opening card {index + 1} of at least {current_count} loaded results...")
+            business_data = self.scrape_business_card(cards.nth(index), index + 1, location_info)
+            if business_data:
+                identity = self._build_card_identity(business_data)
+                if identity not in seen_businesses:
+                    seen_businesses.add(identity)
+                    results.append(business_data)
+                    if progress_callback:
+                        progress_callback(
+                            len(results),
+                            f"Downloaded {len(results)} of {self.max_results} businesses. Last: {business_data.get('name', 'Unknown')}",
+                        )
+            if (index + 1) % 10 == 0 and results:
+                self.save_progress(results, keyword, location, f"_partial_{len(results)}")
+            if (index + 1) % 25 == 0:
+                self.scroll_results_enhanced(progress_callback=progress_callback)
+            index += 1
+            self.human_like_delay()
+
+        return len(results) - start_count
 
     def human_like_delay(self, minimum: Optional[float] = None, maximum: Optional[float] = None) -> None:
         low = self.delay_between_requests - 0.5 if minimum is None else minimum
@@ -862,6 +898,10 @@ class UniversalGoogleMapsScraper:
                 break
         if not info["country"] and parts:
             info["country"] = parts[-1]
+        if info["city"] and not info["country"]:
+            info["country"] = self._infer_country_from_city(info["city"])
+        if info["country"]:
+            info["country"] = self._canonical_country_name(info["country"])
         return info
 
     def _extract_reviews_count(self, value: str) -> int:
@@ -1072,50 +1112,34 @@ class UniversalGoogleMapsScraper:
         location_info = self.determine_location_from_input(location)
         results: List[Dict[str, object]] = []
         seen_businesses: set[str] = set()
+        queries = self._build_search_queries(keyword, location, radius)
 
         try:
-            self._open_best_search_page(keyword, location, radius, progress_callback=progress_callback)
+            last_error: Optional[Exception] = None
+            for query_index, query in enumerate(queries, start=1):
+                if len(results) >= self.max_results:
+                    break
 
-            self.scroll_results_enhanced(progress_callback=progress_callback)
-            if progress_callback:
-                progress_callback(0, f"Found map results. Opening business cards until {self.max_results} businesses are collected...")
-
-            index = 0
-            stagnant_cards = 0
-            while len(results) < self.max_results:
-                cards = self._get_business_cards()
-                current_count = cards.count()
-                if index >= current_count:
-                    previous_count = current_count
-                    self.scroll_results_enhanced(progress_callback=progress_callback)
-                    current_count = self._get_business_cards().count()
-                    if current_count <= previous_count:
-                        stagnant_cards += 1
-                    else:
-                        stagnant_cards = 0
-                    if index >= current_count and stagnant_cards >= 3:
-                        break
-                    if index >= current_count:
+                try:
+                    if not self._open_search_query(query, radius, query_index, len(queries), progress_callback=progress_callback):
                         continue
-                if progress_callback:
-                    progress_callback(len(results), f"Opening card {index + 1} of at least {current_count} loaded results...")
-                business_data = self.scrape_business_card(cards.nth(index), index + 1, location_info)
-                if business_data:
-                    identity = self._build_card_identity(business_data)
-                    if identity not in seen_businesses:
-                        seen_businesses.add(identity)
-                        results.append(business_data)
-                        if progress_callback:
-                            progress_callback(
-                                len(results),
-                                f"Downloaded {len(results)} of {self.max_results} businesses. Last: {business_data.get('name', 'Unknown')}",
-                            )
-                if (index + 1) % 10 == 0 and results:
-                    self.save_progress(results, keyword, location, f"_partial_{index + 1}")
-                if (index + 1) % 25 == 0:
-                    self.scroll_results_enhanced(progress_callback=progress_callback)
-                index += 1
-                self.human_like_delay()
+                    added = self._collect_results_from_open_page(
+                        keyword,
+                        location,
+                        location_info,
+                        results,
+                        seen_businesses,
+                        progress_callback=progress_callback,
+                    )
+                    if progress_callback:
+                        progress_callback(len(results), f"Query {query_index}/{len(queries)} finished with {added} new businesses.")
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("Search query failed (%s/%s): %s", query_index, len(queries), exc)
+                    continue
+
+            if not results and last_error is not None:
+                raise last_error
 
             if progress_callback:
                 progress_callback(len(results), f"Scrape completed with {len(results)} businesses.")
