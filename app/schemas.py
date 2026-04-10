@@ -40,6 +40,7 @@ class BusinessResponse(BaseModel):
     state_province: Optional[str] = None
     email: Optional[str] = None
     social_media: Optional[str] = None
+    extraction_sources: Optional[str] = None
     created_at: datetime
     lead_id: Optional[int] = None
     lead_status: Optional[str] = None

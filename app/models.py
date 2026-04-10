@@ -54,6 +54,7 @@ class Business(Base):
     state_province = Column(String(100), nullable=True)
     email = Column(String(255), nullable=True)
     social_media = Column(Text, nullable=True)
+    extraction_sources = Column(Text, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
 
     scrape_run = relationship("ScrapeRun", back_populates="businesses")

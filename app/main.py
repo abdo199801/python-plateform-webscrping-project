@@ -229,6 +229,25 @@ def ensure_scrape_run_columns() -> None:
             connection.execute(text("UPDATE scrape_runs SET processed_results = COALESCE(total_results, 0) WHERE processed_results IS NULL"))
 
 
+def ensure_business_columns() -> None:
+    inspector = inspect(engine)
+    if "businesses" not in inspector.get_table_names():
+        return
+
+    existing_columns = {column["name"] for column in inspector.get_columns("businesses")}
+    statements: list[str] = []
+
+    if "extraction_sources" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN extraction_sources TEXT")
+
+    if not statements:
+        return
+
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
 def _normalize_run_datetime(value):
     if value is None:
         return None
@@ -380,6 +399,7 @@ def startup():
         Base.metadata.create_all(bind=engine)
         ensure_platform_user_auth_columns()
         ensure_scrape_run_columns()
+        ensure_business_columns()
         # Test the connection
         db = next(get_db())
         db.execute(text("SELECT 1"))

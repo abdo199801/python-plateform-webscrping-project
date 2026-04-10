@@ -156,12 +156,24 @@ DETAIL_PHONE_TEXT_SELECTORS = [
     "button[aria-label*='Telephone']",
     "button[aria-label*='telephone']",
     "button[aria-label*='Tel']",
+    "div[data-item-id*='phone']",
+    "div[class*='phone']",
+    "span[aria-label*='Phone']",
+    "span[aria-label*='phone']",
     "a[href^='tel:']",
     "div[role='main'] a[href^='tel:']",
+]
+DETAIL_PHONE_ATTRIBUTE_SELECTORS = [
+    ("button[data-item-id*='phone']", "aria-label"),
+    ("button[data-item-id*='phone:tel']", "aria-label"),
+    ("button[aria-label*='Phone']", "aria-label"),
+    ("button[aria-label*='phone']", "aria-label"),
+    ("a[href^='tel:']", "href"),
 ]
 DETAIL_WEBSITE_ATTRIBUTE_SELECTORS = [
     ("a[data-item-id*='authority']", "href"),
     ("a[data-item-id*='menu']", "href"),
+    ("a[data-item-id*='website']", "href"),
     ("a[aria-label*='Website']", "href"),
     ("a[aria-label*='website']", "href"),
     ("a[aria-label*='site web']", "href"),
@@ -180,6 +192,20 @@ DETAIL_ADDRESS_TEXT_SELECTORS = [
     "button[aria-label*='direccion']",
     "button[aria-label*='indirizzo']",
     "button[aria-label*='endereco']",
+    "div[class*='address']",
+    "div[class*='Address']",
+    "div[class*='location']",
+    "div[class*='Location']",
+]
+DETAIL_ADDRESS_ATTRIBUTE_SELECTORS = [
+    ("button[data-item-id*='address']", "aria-label"),
+    ("button[data-item-id*='locatedin']", "aria-label"),
+    ("button[aria-label*='Address']", "aria-label"),
+    ("button[aria-label*='address']", "aria-label"),
+    ("button[aria-label*='adresse']", "aria-label"),
+    ("button[aria-label*='direccion']", "aria-label"),
+    ("button[aria-label*='indirizzo']", "aria-label"),
+    ("button[aria-label*='endereco']", "aria-label"),
 ]
 MAX_SEARCH_VARIANTS = 4
 MAX_SCROLL_STAGNANT_ROUNDS = 12
@@ -211,6 +237,7 @@ class BusinessData:
     state_province: str = ""
     email: str = ""
     social_media: str = ""
+    extraction_sources: str = ""
 
 
 class UniversalGoogleMapsScraper:
@@ -977,6 +1004,43 @@ class UniversalGoogleMapsScraper:
                 base[key] = value
         return base
 
+    def _set_field_value(
+        self,
+        data: BusinessData,
+        extraction_sources: Dict[str, str],
+        field_name: str,
+        value: object,
+        source_label: str,
+        overwrite: bool = False,
+    ) -> None:
+        if value is None:
+            return
+        if isinstance(value, str):
+            value = self._clean_text(value)
+            if not value:
+                return
+        current_value = getattr(data, field_name, None)
+        if current_value not in (None, "", 0, 0.0) and not overwrite:
+            return
+        setattr(data, field_name, value)
+        if overwrite or field_name not in extraction_sources:
+            extraction_sources[field_name] = source_label
+
+    def _update_fields_from_mapping(
+        self,
+        data: BusinessData,
+        extraction_sources: Dict[str, str],
+        values: Dict[str, object],
+        source_label: str,
+        fields: Optional[List[str]] = None,
+        overwrite: bool = False,
+    ) -> None:
+        for field_name, value in values.items():
+            if fields is not None and field_name not in fields:
+                continue
+            if hasattr(data, field_name):
+                self._set_field_value(data, extraction_sources, field_name, value, source_label, overwrite=overwrite)
+
     def _extract_structured_data_from_html(self, html: str, base_url: str) -> Dict[str, str]:
         info = {"email": "", "phone": "", "social_media": "", "website": "", "address": ""}
         if not html:
@@ -1038,6 +1102,63 @@ class UniversalGoogleMapsScraper:
             return self.page.locator("body").inner_text(timeout=2_000) or ""
         except Exception:
             return ""
+
+    def _extract_detail_html_blob(self) -> str:
+        if self.page is None:
+            return ""
+        try:
+            return self.page.content() or ""
+        except Exception:
+            return ""
+
+    def _extract_maps_html_details(self, html: str, base_url: str) -> Dict[str, str]:
+        info = {"phone": "", "website": "", "email": "", "social_media": "", "address": ""}
+        if not html:
+            return info
+
+        soup = BeautifulSoup(html, "html.parser")
+        merged = self._extract_contact_details_from_html(html, base_url)
+        for field in ("phone", "website", "email", "social_media"):
+            info[field] = merged.get(field, "")
+
+        for selector in ["button[data-item-id*='address']", "button[data-item-id*='locatedin']", "button[aria-label*='Address']", "button[aria-label*='address']", "button[aria-label*='adresse']", "button[aria-label*='direccion']", "button[aria-label*='indirizzo']", "button[aria-label*='endereco']", "div[class*='address']", "div[class*='location']"]:
+            for node in soup.select(selector):
+                text = self._clean_text(node.get_text(" "))
+                aria_label = self._clean_text(node.get("aria-label", ""))
+                candidate = text or aria_label
+                if candidate and len(candidate) >= 6:
+                    info["address"] = candidate
+                    break
+            if info["address"]:
+                break
+
+        if not info["address"]:
+            html_text = soup.get_text(" ", strip=True)
+            address_match = re.search(
+                r"(?:Address|adresse|direccion|indirizzo|endereco)\s*[:\-]?\s*([^|\n]{8,180})",
+                html_text,
+                flags=re.IGNORECASE,
+            )
+            if address_match:
+                info["address"] = self._clean_text(address_match.group(1))
+
+        return info
+
+    def _wait_for_detail_fields(self) -> None:
+        if self.page is None:
+            return
+        deadline = time.time() + 4.5
+        text_selectors = DETAIL_PHONE_TEXT_SELECTORS + DETAIL_ADDRESS_TEXT_SELECTORS + DETAIL_HEADING_SELECTORS
+        while time.time() < deadline:
+            for selector in text_selectors:
+                value = self._inner_text(selector)
+                if value and len(value.strip()) >= 2:
+                    return
+            for selector_pairs in (DETAIL_PHONE_ATTRIBUTE_SELECTORS, DETAIL_WEBSITE_ATTRIBUTE_SELECTORS, DETAIL_ADDRESS_ATTRIBUTE_SELECTORS):
+                value = self._first_attribute(selector_pairs)
+                if value:
+                    return
+            self.human_like_delay(0.2, 0.5)
 
     def _fetch_url_text(self, url: str) -> Tuple[str, str]:
         request = urlrequest.Request(url, headers=self._build_request_headers())
@@ -1225,23 +1346,37 @@ class UniversalGoogleMapsScraper:
     def _extract_contact_info(self) -> Dict[str, str]:
         info = {"phone": "", "website": "", "email": "", "social_media": ""}
         phone_text = self._first_text(DETAIL_PHONE_TEXT_SELECTORS)
+        phone_attr = self._first_attribute(DETAIL_PHONE_ATTRIBUTE_SELECTORS)
         if phone_text and self.phone_pattern.search(phone_text):
             info["phone"] = self._normalize_phone(phone_text)
+        elif phone_attr:
+            info["phone"] = self._normalize_phone(phone_attr.replace("tel:", ""))
         website = self._first_attribute(DETAIL_WEBSITE_ATTRIBUTE_SELECTORS)
         if website and "google." not in website.lower():
             info["website"] = self._normalize_website(website)
         body = self._extract_page_text_blob()
+        html = self._extract_detail_html_blob()
         emails = self._extract_emails_from_text(body)
         phones = self._extract_phones_from_text(body)
         if emails:
             info["email"] = emails[0]
         if phones and not info["phone"]:
             info["phone"] = phones[0]
+        if html:
+            html_details = self._extract_maps_html_details(html, self.page.url if self.page is not None else "")
+            self._merge_detail_dicts(info, {key: html_details.get(key, "") for key in ("phone", "website", "email", "social_media")})
         info["social_media"] = self._extract_social_media_links()
         return info
 
     def _extract_address_info(self) -> Dict[str, str]:
         address = self._first_text(DETAIL_ADDRESS_TEXT_SELECTORS, minimum_length=6)
+        if not address:
+            address = self._first_attribute(DETAIL_ADDRESS_ATTRIBUTE_SELECTORS)
+        if not address:
+            detail_html = self._extract_detail_html_blob()
+            if detail_html:
+                html_details = self._extract_maps_html_details(detail_html, self.page.url if self.page is not None else "")
+                address = html_details.get("address", "")
         return self._split_address_parts(address)
 
     def extract_basic_card_info(self, card: Locator) -> Dict[str, object]:
@@ -1299,6 +1434,7 @@ class UniversalGoogleMapsScraper:
             arg={"previous": previous_url, "selectors": DETAIL_READY_SELECTORS},
             timeout=DETAIL_PANEL_TIMEOUT_SECONDS * 1000,
         )
+        self._wait_for_detail_fields()
         self.human_like_delay(1.0, 1.8)
 
     def _close_detail_panel(self) -> None:
@@ -1313,78 +1449,104 @@ class UniversalGoogleMapsScraper:
     def scrape_business_card(self, card: Locator, index: int, location_info: Dict[str, str]) -> Optional[Dict[str, object]]:
         try:
             data = BusinessData()
+            extraction_sources: Dict[str, str] = {}
             basic_info = self.extract_basic_card_info(card)
             if not basic_info.get("name"):
                 return None
-            for key, value in basic_info.items():
-                if hasattr(data, key) and value:
-                    setattr(data, key, value)
+            self._update_fields_from_mapping(
+                data,
+                extraction_sources,
+                basic_info,
+                source_label="maps_card",
+                fields=["name", "rating", "reviews_count", "category", "address", "website"],
+            )
             if location_info.get("country"):
-                data.country = location_info["country"]
+                self._set_field_value(data, extraction_sources, "country", location_info["country"], "location_input")
             if location_info.get("city"):
-                data.city = location_info["city"]
+                self._set_field_value(data, extraction_sources, "city", location_info["city"], "location_input")
             if location_info.get("state_province"):
-                data.state_province = location_info["state_province"]
+                self._set_field_value(data, extraction_sources, "state_province", location_info["state_province"], "location_input")
 
             try:
                 self._open_business_details(card)
                 if self.page is not None:
                     current_url = self.page.url
-                    data.source_url = current_url
+                    self._set_field_value(data, extraction_sources, "source_url", current_url, "maps_detail_url", overwrite=True)
                     latitude, longitude = self.extract_coordinates_from_url(current_url)
-                    data.latitude = latitude
-                    data.longitude = longitude
-                    data.place_id = self.extract_place_id(current_url)
+                    self._set_field_value(data, extraction_sources, "latitude", latitude, "maps_detail_url", overwrite=True)
+                    self._set_field_value(data, extraction_sources, "longitude", longitude, "maps_detail_url", overwrite=True)
+                    self._set_field_value(data, extraction_sources, "place_id", self.extract_place_id(current_url), "maps_detail_url", overwrite=True)
 
                 detail_name = self._first_text(DETAIL_HEADING_SELECTORS, minimum_length=2)
                 if detail_name:
-                    data.name = self._clean_text(detail_name)
+                    self._set_field_value(data, extraction_sources, "name", detail_name, "maps_detail_heading", overwrite=True)
 
                 rating_text = self._first_attribute(DETAIL_RATING_ATTRIBUTE_SELECTORS) or self._first_text(DETAIL_RATING_TEXT_SELECTORS)
                 if rating_text:
-                    data.rating = self._extract_rating(rating_text)
+                    self._set_field_value(data, extraction_sources, "rating", self._extract_rating(rating_text), "maps_detail_rating", overwrite=True)
 
                 review_text = self._first_text(DETAIL_REVIEW_SELECTORS) or rating_text
                 if review_text:
-                    data.reviews_count = self._extract_reviews_count(review_text)
+                    self._set_field_value(data, extraction_sources, "reviews_count", self._extract_reviews_count(review_text), "maps_detail_reviews", overwrite=True)
 
                 category = self._first_text(DETAIL_CATEGORY_SELECTORS)
                 if category:
-                    data.category = self._normalize_category(category.split("\n")[0].strip())
+                    self._set_field_value(data, extraction_sources, "category", self._normalize_category(category.split("\n")[0].strip()), "maps_detail_category", overwrite=True)
 
                 details = self._extract_contact_info()
                 details.update(self._extract_address_info())
                 details.update(self._extract_business_hours_and_description())
                 page_text = self._extract_page_text_blob()
+                detail_html = self._extract_detail_html_blob()
                 if page_text:
                     if not details.get("email"):
                         page_emails = self._extract_emails_from_text(page_text)
                         if page_emails:
                             details["email"] = page_emails[0]
+                            extraction_sources.setdefault("email", "maps_page_text")
                     if not details.get("phone"):
                         page_phones = self._extract_phones_from_text(page_text)
                         if page_phones:
                             details["phone"] = page_phones[0]
+                            extraction_sources.setdefault("phone", "maps_page_text")
+                if detail_html:
+                    html_details = self._extract_maps_html_details(detail_html, self.page.url if self.page is not None else "")
+                    for field in ("phone", "website", "email", "social_media", "address"):
+                        if html_details.get(field) and not details.get(field):
+                            details[field] = html_details[field]
+                            extraction_sources.setdefault(field, "maps_html")
+                self._update_fields_from_mapping(
+                    data,
+                    extraction_sources,
+                    details,
+                    source_label="maps_detail",
+                    fields=["phone", "website", "email", "social_media", "address", "country", "city", "street", "postal_code", "state_province", "business_hours", "description"],
+                )
                 if details.get("website"):
                     enriched = self._enrich_from_website(details["website"])
                     for field in ("email", "phone", "social_media", "address"):
                         if enriched.get(field) and not details.get(field):
                             details[field] = enriched[field]
+                    self._update_fields_from_mapping(
+                        data,
+                        extraction_sources,
+                        enriched,
+                        source_label="website_enrichment",
+                        fields=["email", "phone", "social_media", "address", "website"],
+                    )
                 if details.get("address") and not data.address:
-                    data.address = details["address"]
+                    self._set_field_value(data, extraction_sources, "address", details["address"], extraction_sources.get("address", "maps_detail"))
                     parsed_address = self._split_address_parts(details["address"])
                     for field in ("country", "city", "street", "postal_code", "state_province"):
                         if parsed_address.get(field) and not getattr(data, field):
-                            setattr(data, field, parsed_address[field])
-                for key, value in details.items():
-                    if hasattr(data, key) and value:
-                        setattr(data, key, value)
+                            self._set_field_value(data, extraction_sources, field, parsed_address[field], extraction_sources.get("address", "address_parsed"))
             except Exception as exc:
                 logger.debug("Could not fully open detail panel for card %s: %s", index, exc)
             finally:
                 self._close_detail_panel()
 
             data.scraped_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            data.extraction_sources = json.dumps(extraction_sources, ensure_ascii=True, sort_keys=True)
             return asdict(data)
         except Exception as exc:
             logger.error("Error scraping card %s: %s", index, exc)

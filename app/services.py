@@ -94,6 +94,7 @@ BUSINESS_FIELDS = {
     "state_province",
     "email",
     "social_media",
+    "extraction_sources",
 }
 
 

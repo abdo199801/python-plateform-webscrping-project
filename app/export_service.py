@@ -44,6 +44,7 @@ def _serialize_business_row(business: Business) -> dict:
         "City": business.city or "",
         "Country": business.country or "",
         "Address": business.address or "",
+        "Extraction Sources": business.extraction_sources or "",
         "Rating": business.rating,
         "Reviews": business.reviews_count,
         "Description": business.description or "",
