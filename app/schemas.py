@@ -9,7 +9,7 @@ class ScrapeRequest(BaseModel):
     email: EmailStr
     location: str = Field(default="", max_length=255)
     radius: str = Field(default="10000", max_length=50)
-    max_results: int = Field(default=25, ge=1, le=500)
+    max_results: int = Field(default=25, ge=1, le=1000)
     headless: bool = False
     save_files: bool = False
 

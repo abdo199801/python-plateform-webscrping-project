@@ -11,7 +11,7 @@ class ScrapeRun(Base):
     keyword = Column(String(255), nullable=False, index=True)
     location = Column(String(255), nullable=True, index=True)
     radius = Column(String(50), nullable=False, default="10000")
-    max_results = Column(Integer, nullable=False, default=100)
+    max_results = Column(Integer, nullable=False, default=500)
     headless = Column(Boolean, nullable=False, default=False)
     processed_results = Column(Integer, nullable=False, default=0)
     total_results = Column(Integer, nullable=False, default=0)

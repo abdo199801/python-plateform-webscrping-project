@@ -456,9 +456,113 @@ class UniversalGoogleMapsScraper:
             return ""
         return ""
 
+    def _first_text(self, selectors: List[str], minimum_length: int = 1) -> str:
+        for selector in selectors:
+            value = self._inner_text(selector)
+            if value and len(value.strip()) >= minimum_length:
+                return value.strip()
+        return ""
+
+    def _first_attribute(self, selector_attribute_pairs: List[Tuple[str, str]]) -> str:
+        for selector, attribute in selector_attribute_pairs:
+            value = self._attribute(selector, attribute)
+            if value:
+                return value
+        return ""
+
+    def _clean_text(self, value: str) -> str:
+        return re.sub(r"\s+", " ", (value or "").strip())
+
+    def _normalize_website(self, value: str) -> str:
+        cleaned = self._clean_text(value)
+        if not cleaned:
+            return ""
+        if cleaned.startswith("http://") or cleaned.startswith("https://"):
+            return cleaned
+        if cleaned.startswith("www."):
+            return f"https://{cleaned}"
+        return cleaned
+
+    def _extract_social_media_links(self) -> str:
+        if self.page is None:
+            return ""
+        social_domains = ("facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com", "tiktok.com", "youtube.com")
+        links: List[str] = []
+        for domain in social_domains:
+            locator = self.page.locator(f"a[href*='{domain}']")
+            try:
+                count = min(locator.count(), 3)
+            except Exception:
+                continue
+            for index in range(count):
+                try:
+                    href = locator.nth(index).get_attribute("href", timeout=1_500) or ""
+                except Exception:
+                    href = ""
+                href = href.strip()
+                if href and href not in links:
+                    links.append(href)
+        return ", ".join(links)
+
+    def _split_address_parts(self, address: str) -> Dict[str, str]:
+        info = {
+            "address": self._clean_text(address),
+            "country": "",
+            "city": "",
+            "street": "",
+            "postal_code": "",
+            "state_province": "",
+        }
+        if not info["address"]:
+            return info
+        postal_match = self.postal_pattern.search(info["address"])
+        if postal_match:
+            info["postal_code"] = postal_match.group(0)
+        parts = [self._clean_text(part) for part in info["address"].split(",") if self._clean_text(part)]
+        if parts:
+            info["street"] = parts[0]
+        if len(parts) >= 2:
+            info["city"] = parts[-2]
+        if len(parts) >= 3:
+            info["state_province"] = parts[-3] if len(parts) > 3 else parts[1]
+        lowered = info["address"].lower()
+        for country in self.country_aliases:
+            if country.lower() in lowered:
+                info["country"] = country
+                break
+        if not info["country"] and parts:
+            info["country"] = parts[-1]
+        return info
+
+    def _extract_reviews_count(self, value: str) -> int:
+        review_match = re.search(r"(\d[\d,]*)", value or "")
+        return int(review_match.group(1).replace(",", "")) if review_match else 0
+
+    def _extract_rating(self, value: str) -> float:
+        rating_match = re.search(r"(\d+(?:\.\d+)?)", value or "")
+        return float(rating_match.group(1)) if rating_match else 0.0
+
+    def _normalize_category(self, value: str) -> str:
+        cleaned = self._clean_text(value)
+        if not cleaned:
+            return ""
+        cleaned = re.sub(r"\b\d[\d,]*\s+reviews?\b", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\b\d+(?:\.\d+)?\b", "", cleaned).strip(" ·,-")
+        return self._clean_text(cleaned)
+
     def _extract_business_hours_and_description(self) -> Dict[str, str]:
-        hours = self._inner_text("div[aria-label*='Hours'], table.eK4R0e tbody, div.OMl5r")
-        description = self._inner_text("div.PYvSYb, div.fontBodyMedium span, div[role='main'] span")
+        hours = self._first_text([
+            "div[aria-label*='Hours']",
+            "table.eK4R0e tbody",
+            "div.OMl5r",
+            "div[aria-label*='Open']",
+        ])
+        description = self._first_text([
+            "div.PYvSYb",
+            "div.fontBodyMedium span",
+            "div[role='main'] span[jslog]",
+            "div[role='main'] span",
+        ], minimum_length=20)
         return {
             "business_hours": hours.replace("\n", " | ") if hours else "",
             "description": description if len(description) > 20 else "",
@@ -466,48 +570,35 @@ class UniversalGoogleMapsScraper:
 
     def _extract_contact_info(self) -> Dict[str, str]:
         info = {"phone": "", "website": "", "email": "", "social_media": ""}
-        phone_text = self._inner_text("button[data-item-id*='phone'], a[href^='tel:']")
+        phone_text = self._first_text([
+            "button[data-item-id*='phone']",
+            "button[aria-label*='Phone']",
+            "a[href^='tel:']",
+        ])
         if phone_text and self.phone_pattern.search(phone_text):
-            info["phone"] = phone_text
-        website = self._attribute("a[data-item-id*='authority'], a[href^='http']", "href")
+            info["phone"] = self._clean_text(phone_text)
+        website = self._first_attribute([
+            ("a[data-item-id*='authority']", "href"),
+            ("a[aria-label*='Website']", "href"),
+            ("a[href^='http']", "href"),
+        ])
         if website and "google." not in website.lower():
-            info["website"] = website
+            info["website"] = self._normalize_website(website)
         if self.page is not None:
             body = self.page.locator("body").inner_text(timeout=2_000)
             email_match = self.email_pattern.search(body or "")
             if email_match:
                 info["email"] = email_match.group(0)
+        info["social_media"] = self._extract_social_media_links()
         return info
 
     def _extract_address_info(self) -> Dict[str, str]:
-        info = {
-            "address": "",
-            "country": "",
-            "city": "",
-            "street": "",
-            "postal_code": "",
-            "state_province": "",
-        }
-        address = self._inner_text("button[data-item-id*='address'], div[role='main'] button[aria-label*='Address']")
-        if not address:
-            return info
-        info["address"] = address
-        postal_match = self.postal_pattern.search(address)
-        if postal_match:
-            info["postal_code"] = postal_match.group(0)
-        parts = [part.strip() for part in address.split(",") if part.strip()]
-        if parts:
-            info["street"] = parts[0]
-        if len(parts) >= 2:
-            info["city"] = parts[1]
-        if len(parts) >= 3:
-            info["state_province"] = parts[2]
-        lowered = address.lower()
-        for country in self.country_aliases:
-            if country.lower() in lowered:
-                info["country"] = country
-                break
-        return info
+        address = self._first_text([
+            "button[data-item-id*='address']",
+            "div[role='main'] button[aria-label*='Address']",
+            "button[aria-label*='Address']",
+        ], minimum_length=6)
+        return self._split_address_parts(address)
 
     def extract_basic_card_info(self, card: Locator) -> Dict[str, object]:
         info: Dict[str, object] = {
@@ -524,16 +615,12 @@ class UniversalGoogleMapsScraper:
         lines = [line.strip() for line in card_text.splitlines() if line.strip()]
         if lines:
             info["name"] = lines[0]
-        rating_match = re.search(r"(\d+(?:\.\d+)?)", card_text)
-        if rating_match:
-            info["rating"] = float(rating_match.group(1))
-        reviews_match = re.search(r"(\d[\d,]*)\s+reviews", card_text, re.IGNORECASE)
-        if reviews_match:
-            info["reviews_count"] = int(reviews_match.group(1).replace(",", ""))
+        info["rating"] = self._extract_rating(card_text)
+        info["reviews_count"] = self._extract_reviews_count(card_text)
         if len(lines) >= 2:
-            info["category"] = lines[1]
+            info["category"] = self._normalize_category(lines[1])
         if len(lines) >= 3:
-            info["address"] = lines[2]
+            info["address"] = self._clean_text(lines[2])
         return info
 
     def _open_business_details(self, card: Locator) -> None:
@@ -598,24 +685,32 @@ class UniversalGoogleMapsScraper:
                     data.longitude = longitude
                     data.place_id = self.extract_place_id(current_url)
 
-                detail_name = self._inner_text("h1")
+                detail_name = self._first_text(["h1", "div[role='main'] h1", "h1.DUwDvf"], minimum_length=2)
                 if detail_name:
-                    data.name = detail_name
+                    data.name = self._clean_text(detail_name)
 
-                rating_text = self._attribute("span[role='img'][aria-label*='star']", "aria-label") or self._inner_text("span.MW4etd")
+                rating_text = self._first_attribute([
+                    ("span[role='img'][aria-label*='star']", "aria-label"),
+                    ("span[aria-label*='stars']", "aria-label"),
+                ]) or self._first_text(["span.MW4etd", "div.F7nice span[aria-hidden='true']"])
                 if rating_text:
-                    rating_match = re.search(r"(\d+(?:\.\d+)?)", rating_text)
-                    if rating_match:
-                        data.rating = float(rating_match.group(1))
+                    data.rating = self._extract_rating(rating_text)
 
-                review_text = self._inner_text("button[jsaction*='pane.rating.category']") or rating_text
-                review_match = re.search(r"(\d[\d,]*)", review_text or "")
-                if review_match:
-                    data.reviews_count = int(review_match.group(1).replace(",", ""))
+                review_text = self._first_text([
+                    "button[jsaction*='pane.rating.category']",
+                    "div.F7nice",
+                    "span[aria-label*='reviews']",
+                ]) or rating_text
+                if review_text:
+                    data.reviews_count = self._extract_reviews_count(review_text)
 
-                category = self._inner_text("button[jsaction*='pane.rating.category'], div.DkEaL")
+                category = self._first_text([
+                    "button[jsaction*='pane.rating.category']",
+                    "div.DkEaL",
+                    "button[jsaction*='pane.rating.moreReviews']",
+                ])
                 if category:
-                    data.category = category.split("\n")[0].strip()
+                    data.category = self._normalize_category(category.split("\n")[0].strip())
 
                 details = self._extract_contact_info()
                 details.update(self._extract_address_info())
@@ -758,9 +853,9 @@ if __name__ == "__main__":
     if not keyword:
         raise SystemExit("Keyword is required.")
     location = input("Enter location (optional): ").strip()
-    max_results = int((input("Maximum results [100]: ").strip() or "100"))
+    max_results = int((input("Maximum results [500]: ").strip() or "500"))
     headless = input("Run in background? [y/N]: ").strip().lower() == "y"
-    scraper = UniversalGoogleMapsScraper(headless=headless, max_results=min(max_results, 500))
+    scraper = UniversalGoogleMapsScraper(headless=headless, max_results=min(max_results, 1000))
     rows = scraper.scrape(keyword=keyword, location=location)
     if rows:
         output = scraper.generate_filename(keyword, location) + ".xlsx"

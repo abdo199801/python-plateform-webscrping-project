@@ -28,7 +28,8 @@ stripe.api_key = os.getenv("STRIPE_SECRET_KEY", "sk_test_placeholder")
 STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET", "whsec_placeholder")
 TRIAL_DURATION_DAYS = 15
 SCRAPE_ALLOWED_TIERS = {SubscriptionTier.PRO, SubscriptionTier.ENTERPRISE}
-DEFAULT_MAX_RESULTS_PER_SCRAPE = 100
+DEFAULT_MAX_RESULTS_PER_SCRAPE = 500
+ENTERPRISE_MAX_RESULTS_PER_SCRAPE = 1000
 
 # Pricing configuration
 PRICING_PLANS = [
@@ -56,7 +57,7 @@ PRICING_PLANS = [
         "max_results_per_scrape": DEFAULT_MAX_RESULTS_PER_SCRAPE,
         "features": [
             "Unlimited scrapes after trial",
-            "100 results per scrape",
+            "500 results per scrape",
             "All export formats",
             "Priority support",
             "Card or PayPal checkout",
@@ -70,10 +71,10 @@ PRICING_PLANS = [
         "price": 199,
         "billing_period": "monthly",
         "scrape_credits": 999,
-        "max_results_per_scrape": 500,
+        "max_results_per_scrape": ENTERPRISE_MAX_RESULTS_PER_SCRAPE,
         "features": [
             "Unlimited scrapes after trial",
-            "500 results per scrape",
+            "1000 results per scrape",
             "All export formats",
             "24/7 Priority support",
             "Unlimited business storage",

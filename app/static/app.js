@@ -86,7 +86,8 @@ let paymentConfig = {
 };
 let accessState = null;
 const runListState = { page: 1, pageSize: 6 };
-const DEFAULT_MAX_RESULTS_PER_SCRAPE = 100;
+const DEFAULT_MAX_RESULTS_PER_SCRAPE = 500;
+const ENTERPRISE_MAX_RESULTS_PER_SCRAPE = 1000;
 const businessListState = {
   page: 1,
   pageSize: 10,
@@ -692,7 +693,7 @@ function updateAccessDisplay() {
     statusCreditsEl.textContent = accessState.trial_days_left;
     creditDisplayEl.style.opacity = "1";
     maxResultsField.max = accessState.subscription_tier === "enterprise"
-      ? "500"
+      ? String(ENTERPRISE_MAX_RESULTS_PER_SCRAPE)
       : String(DEFAULT_MAX_RESULTS_PER_SCRAPE);
     return;
   }
@@ -1556,7 +1557,7 @@ formEl.addEventListener("submit", async (event) => {
   };
   updateMapPreview(String(payload.keyword || ""), String(payload.location || ""));
   const maxResultsAllowed = accessState?.has_active_subscription && accessState.subscription_tier === "enterprise"
-    ? 500
+    ? ENTERPRISE_MAX_RESULTS_PER_SCRAPE
     : DEFAULT_MAX_RESULTS_PER_SCRAPE;
   if (payload.max_results > maxResultsAllowed) {
     setStatus(`Your current plan allows up to ${maxResultsAllowed} results per scrape. Upgrade to scrape more.`, true);
