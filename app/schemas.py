@@ -9,7 +9,7 @@ class ScrapeRequest(BaseModel):
     email: EmailStr
     location: str = Field(default="", max_length=255)
     radius: str = Field(default="10000", max_length=50)
-    max_results: int = Field(default=1000, ge=1, le=1000)
+    max_results: int = Field(default=500, ge=1, le=500)
     headless: bool = False
     save_files: bool = False
 
@@ -41,6 +41,17 @@ class BusinessResponse(BaseModel):
     email: Optional[str] = None
     social_media: Optional[str] = None
     extraction_sources: Optional[str] = None
+    ai_place_summary: Optional[str] = None
+    ai_current_hours: Optional[str] = None
+    ai_popular_times: Optional[str] = None
+    ai_review_highlights: Optional[str] = None
+    ai_grounding_sources: Optional[str] = None
+    ai_enrichment_status: Optional[str] = None
+    ai_enriched_at: Optional[datetime] = None
+    dedupe_status: Optional[str] = None
+    duplicate_of_business_id: Optional[int] = None
+    dedupe_confidence: Optional[float] = None
+    dedupe_notes: Optional[str] = None
     created_at: datetime
     lead_id: Optional[int] = None
     lead_status: Optional[str] = None

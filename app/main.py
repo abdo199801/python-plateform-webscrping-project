@@ -239,6 +239,28 @@ def ensure_business_columns() -> None:
 
     if "extraction_sources" not in existing_columns:
         statements.append("ALTER TABLE businesses ADD COLUMN extraction_sources TEXT")
+    if "ai_place_summary" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_place_summary TEXT")
+    if "ai_current_hours" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_current_hours TEXT")
+    if "ai_popular_times" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_popular_times TEXT")
+    if "ai_review_highlights" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_review_highlights TEXT")
+    if "ai_grounding_sources" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_grounding_sources TEXT")
+    if "ai_enrichment_status" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_enrichment_status VARCHAR(50)")
+    if "ai_enriched_at" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN ai_enriched_at TIMESTAMP")
+    if "dedupe_status" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN dedupe_status VARCHAR(50)")
+    if "duplicate_of_business_id" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN duplicate_of_business_id INTEGER")
+    if "dedupe_confidence" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN dedupe_confidence DOUBLE PRECISION")
+    if "dedupe_notes" not in existing_columns:
+        statements.append("ALTER TABLE businesses ADD COLUMN dedupe_notes TEXT")
 
     if not statements:
         return
@@ -538,7 +560,11 @@ def build_business_query(
     tag: Optional[str] = None,
     saved_only: bool = False,
 ):
-    query = db.query(Business).order_by(Business.created_at.desc())
+    query = (
+        db.query(Business)
+        .filter(or_(Business.dedupe_status.is_(None), Business.dedupe_status != "merged"))
+        .order_by(Business.created_at.desc())
+    )
 
     if search:
         pattern = f"%{search}%"
@@ -851,19 +877,21 @@ def download_scrape_export(run_id: int, file_format: str, db: Session = Depends(
 
 @app.get("/api/insights/overview", response_model=InsightOverviewResponse)
 def insights_overview(db: Session = Depends(get_db)):
+    active_business_filter = or_(Business.dedupe_status.is_(None), Business.dedupe_status != "merged")
     total_runs = db.query(func.count(ScrapeRun.id)).scalar() or 0
-    total_businesses = db.query(func.count(Business.id)).scalar() or 0
+    total_businesses = db.query(func.count(Business.id)).filter(active_business_filter).scalar() or 0
     completed_runs = (
         db.query(func.count(ScrapeRun.id))
         .filter(ScrapeRun.status == "completed")
         .scalar()
         or 0
     )
-    average_rating = db.query(func.avg(Business.rating)).scalar() or 0
+    average_rating = db.query(func.avg(Business.rating)).filter(active_business_filter).scalar() or 0
 
     contactable_businesses = (
         db.query(func.count(Business.id))
         .filter(
+            active_business_filter,
             or_(
                 func.length(func.trim(func.coalesce(Business.phone, ""))) > 0,
                 func.length(func.trim(func.coalesce(Business.website, ""))) > 0,
@@ -876,6 +904,7 @@ def insights_overview(db: Session = Depends(get_db)):
 
     top_categories_query = (
         db.query(Business.category, func.count(Business.id))
+        .filter(active_business_filter)
         .filter(Business.category.isnot(None), Business.category != "")
         .group_by(Business.category)
         .order_by(func.count(Business.id).desc(), Business.category.asc())
@@ -884,6 +913,7 @@ def insights_overview(db: Session = Depends(get_db)):
     )
     top_cities_query = (
         db.query(Business.city, func.count(Business.id))
+        .filter(active_business_filter)
         .filter(Business.city.isnot(None), Business.city != "")
         .group_by(Business.city)
         .order_by(func.count(Business.id).desc(), Business.city.asc())

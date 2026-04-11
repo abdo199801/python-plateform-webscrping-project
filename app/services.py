@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy.orm import Session
 
 from app import models
+from app.ai_enrichment_service import run_post_scrape_intelligence
 from app.database import SessionLocal
 
 
@@ -336,6 +337,9 @@ def process_scrape_run(run_id: int, payload: Dict[str, Any], user_email: str) ->
                 on_progress=lambda processed, message: update_scrape_run_progress(db, run_id, processed, message),
             )
             complete_scrape_run(db, run_id, results)
+            update_scrape_run_progress(db, run_id, len(results), "Running local enrichment and deduplication...")
+            run_post_scrape_intelligence(db, run_id)
+            update_scrape_run_progress(db, run_id, len(results), "Scrape completed with free local enrichment and deduplication.")
 
             from app.payment_service import mark_user_scrape
 

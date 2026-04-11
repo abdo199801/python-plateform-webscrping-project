@@ -11,6 +11,8 @@ This project now includes:
 - A browser dashboard
 - A Playwright Google Maps scraper
 - Optional Celery + Redis queue workers for scrape jobs
+- Free local enrichment based on scraped business fields
+- Smart duplicate detection using deterministic fuzzy matching
 
 ## Setup
 
@@ -55,6 +57,7 @@ celery -A app.tasks worker --loglevel=info --pool=solo
 
 - Tables are created automatically on startup.
 - `POST /api/scrapes` runs the Playwright scraper and then stores the results in PostgreSQL.
+- After a scrape completes, the app runs free local enrichment and fuzzy deduplication for the saved businesses.
 - If `save_files` is `true`, the scrape also exports XLSX and CSV files using the original script behavior.
 - Celery is enabled only when `ENABLE_CELERY=true` and Redis is configured. Otherwise the API falls back to FastAPI in-process background tasks.
 

@@ -88,8 +88,8 @@ let paymentConfig = {
 let accessState = null;
 const runListState = { page: 1, pageSize: 6 };
 const runFiltersState = { search: "", status: "" };
-const DEFAULT_MAX_RESULTS_PER_SCRAPE = 1000;
-const ENTERPRISE_MAX_RESULTS_PER_SCRAPE = 1000;
+const DEFAULT_MAX_RESULTS_PER_SCRAPE = 500;
+const ENTERPRISE_MAX_RESULTS_PER_SCRAPE = 500;
 const businessListState = {
   page: 1,
   pageSize: 10,
@@ -1635,6 +1635,25 @@ async function subscribeToPlan(tier, provider) {
   setStatus(`${String(tier).toUpperCase()} plan selected. Your account profile is saved and ready.`, false);
 }
 
+async function runButtonAction(button, pendingText, action) {
+  if (!button) {
+    return;
+  }
+
+  const originalText = button.textContent;
+  button.disabled = true;
+  if (pendingText) {
+    button.textContent = pendingText;
+  }
+
+  try {
+    await action();
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+}
+
 profileFormEl.addEventListener("submit", async (event) => {
   event.preventDefault();
   await saveProfile();
@@ -1731,13 +1750,15 @@ formEl.addEventListener("submit", async (event) => {
   }
 });
 
-document.getElementById("refresh-runs").addEventListener("click", async () => {
-  try {
-    await loadRuns();
-    setStatus("Runs refreshed.");
-  } catch (error) {
-    setStatus(error.message, true);
-  }
+document.getElementById("refresh-runs").addEventListener("click", async (event) => {
+  await runButtonAction(event.currentTarget, "Refreshing...", async () => {
+    try {
+      await loadRuns();
+      setStatus("Runs refreshed.");
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
 });
 
 runFilterFormEl.addEventListener("submit", async (event) => {
@@ -1764,40 +1785,49 @@ document.getElementById("clearRunFilters").addEventListener("click", async () =>
   }
 });
 
-document.getElementById("refresh-businesses").addEventListener("click", async () => {
-  try {
-    await loadBusinesses();
-    setStatus("Businesses refreshed.");
-  } catch (error) {
-    setStatus(error.message, true);
-  }
+document.getElementById("refresh-businesses").addEventListener("click", async (event) => {
+  await runButtonAction(event.currentTarget, "Refreshing...", async () => {
+    try {
+      await Promise.all([loadBusinesses(), loadSavedSearches()]);
+      renderBusinessExportToolbar();
+      setStatus("Businesses refreshed.");
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
 });
 
-document.getElementById("refresh-leads").addEventListener("click", async () => {
-  try {
-    await Promise.all([loadLeadSummary(), loadSavedSearches(), loadBusinesses()]);
-    setStatus("Lead desk refreshed.");
-  } catch (error) {
-    setStatus(error.message, true);
-  }
+document.getElementById("refresh-leads").addEventListener("click", async (event) => {
+  await runButtonAction(event.currentTarget, "Refreshing...", async () => {
+    try {
+      await Promise.all([loadLeadSummary(), loadSavedSearches(), loadBusinesses()]);
+      setStatus("Lead desk refreshed.");
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
 });
 
-document.getElementById("refresh-insights").addEventListener("click", async () => {
-  try {
-    await loadInsights();
-    setStatus("Signal board refreshed.");
-  } catch (error) {
-    setStatus(error.message, true);
-  }
+document.getElementById("refresh-insights").addEventListener("click", async (event) => {
+  await runButtonAction(event.currentTarget, "Refreshing...", async () => {
+    try {
+      await loadInsights();
+      setStatus("Signal board refreshed.");
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
 });
 
-document.getElementById("refresh-dashboard").addEventListener("click", async () => {
-  try {
-    await loadUserDashboard();
-    setStatus("Dashboard refreshed.");
-  } catch (error) {
-    setStatus(error.message, true);
-  }
+document.getElementById("refresh-dashboard").addEventListener("click", async (event) => {
+  await runButtonAction(event.currentTarget, "Refreshing...", async () => {
+    try {
+      await Promise.all([loadAccessStatus(), loadUserDashboard()]);
+      setStatus("Dashboard refreshed.");
+    } catch (error) {
+      setStatus(error.message, true);
+    }
+  });
 });
 
 dashboardUpgradeProEl.addEventListener("click", async () => {
@@ -1901,12 +1931,14 @@ formEl.querySelector('input[name="location"]').addEventListener("input", () => {
   );
 });
 
-refreshMapPreviewEl.addEventListener("click", () => {
-  updateMapPreview(
-    formEl.querySelector('input[name="keyword"]').value,
-    formEl.querySelector('input[name="location"]').value,
-  );
-  setStatus("Google Maps preview refreshed.");
+refreshMapPreviewEl.addEventListener("click", async (event) => {
+  await runButtonAction(event.currentTarget, "Refreshing...", async () => {
+    updateMapPreview(
+      formEl.querySelector('input[name="keyword"]').value,
+      formEl.querySelector('input[name="location"]').value,
+    );
+    setStatus("Google Maps preview refreshed.");
+  });
 });
 
 syncAdminLinks();
